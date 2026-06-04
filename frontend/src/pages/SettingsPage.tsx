@@ -161,6 +161,52 @@ export default function SettingsPage() {
       ]
     }'
 
+  # ── Responses API (Codex / Continue.dev) ──
+
+  # Responses API - non-streaming
+  curl ${baseUrl}/v1/responses \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer YOUR_API_KEY" \
+    -d '{
+      "model": "qwen3.6-plus",
+      "input": "Hello, how are you?",
+      "stream": false
+    }'
+
+  # Responses API - streaming
+  curl -N ${baseUrl}/v1/responses \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer YOUR_API_KEY" \
+    -d '{
+      "model": "qwen3.6-plus",
+      "input": "Explain quantum computing",
+      "stream": true
+    }'
+
+  # Responses API - with tools (function calling)
+  curl -N ${baseUrl}/v1/responses \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer YOUR_API_KEY" \
+    -d '{
+      "model": "qwen3.6-plus",
+      "input": "List files in /home directory",
+      "stream": true,
+      "tools": [
+        {
+          "type": "function",
+          "name": "exec_command",
+          "description": "Run a shell command",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "cmd": {"type": "string", "description": "Shell command to execute"}
+            },
+            "required": ["cmd"]
+          }
+        }
+      ]
+    }'
+
   # Anthropic / Claude Code + attachment
   curl ${baseUrl}/anthropic/v1/messages \
     -H "Content-Type: application/json" \

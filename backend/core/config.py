@@ -37,10 +37,13 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
     RATE_LIMIT_COOLDOWN: int = 600
     ACCOUNT_MIN_INTERVAL_MS: int = int(os.getenv("ACCOUNT_MIN_INTERVAL_MS", 0))
+    ACCOUNT_READY_SET_THRESHOLD: int = int(os.getenv("ACCOUNT_READY_SET_THRESHOLD", 1))
     REQUEST_JITTER_MIN_MS: int = int(os.getenv("REQUEST_JITTER_MIN_MS", 0))
     REQUEST_JITTER_MAX_MS: int = int(os.getenv("REQUEST_JITTER_MAX_MS", 0))
     RATE_LIMIT_BASE_COOLDOWN: int = int(os.getenv("RATE_LIMIT_BASE_COOLDOWN", 600))
     RATE_LIMIT_MAX_COOLDOWN: int = int(os.getenv("RATE_LIMIT_MAX_COOLDOWN", 3600))
+    SEARCH_CONTEXT_FILE: str = os.getenv("SEARCH_CONTEXT_FILE", "")
+    SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", 1800))
 
     # Chat ID 预热池（低风险默认：每账号每模型 1 个，TTL 180 秒）
     CHAT_ID_POOL_ENABLED: bool = _env_bool("CHAT_ID_POOL_ENABLED", True)

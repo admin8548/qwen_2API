@@ -65,13 +65,9 @@ async def lifespan(app: FastAPI):
         from backend.services.chat_id_pool import ChatIdPool
         app.state.chat_id_pool = ChatIdPool(
             app.state.qwen_client,
-            enabled=settings.CHAT_ID_POOL_ENABLED,
             target_per_account=settings.CHAT_ID_POOL_TARGET_PER_ACCOUNT,
             ttl_seconds=settings.CHAT_ID_POOL_TTL_SECONDS,
             default_model="qwen3.6-plus",
-            models=settings.CHAT_ID_POOL_MODELS,
-            refill_interval_seconds=settings.CHAT_ID_POOL_REFILL_INTERVAL_SECONDS,
-            failure_cooldown_seconds=settings.CHAT_ID_POOL_FAILURE_COOLDOWN_SECONDS,
         )
         app.state.qwen_executor.chat_id_pool = app.state.chat_id_pool  # 让 executor 直接访问
         await app.state.chat_id_pool.start()

@@ -12,6 +12,11 @@ from backend.services.task_session import build_retry_rebase_prompt
 from backend.services.token_calc import calculate_usage
 
 
+class EmptyUpstreamResponseError(RuntimeError):
+    """Raised when the upstream returns an empty response after retries."""
+    pass
+
+
 log = logging.getLogger("qwen2api.completion_bridge")
 
 
