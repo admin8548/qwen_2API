@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from backend.adapter.standard_request import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE
 from backend.core.request_logging import get_request_context
-from backend.services.tool_arg_fixer import fix_tool_call_arguments
+from backend.services.tool_arg_fixer import fix_tool_call_arguments, fix_arguments_by_schema
 from backend.services.tool_name_obfuscation import from_qwen_name, to_qwen_name
 from backend.toolcall.normalize import build_tool_name_registry, normalize_tool_name
 from backend.toolcall.parser import parse_tool_calls_detailed

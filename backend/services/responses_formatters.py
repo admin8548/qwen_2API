@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -83,6 +84,19 @@ def _tool_blocks_to_function_call_items(tool_blocks: list[dict[str, Any]]) -> li
     return items
 
 
+
+def _strip_tool_call_blocks(text: str) -> str:
+    """[ADDED 2026-06-05] Remove ##TOOL_CALL##...##END_CALL## and <tool_call>
+    blocks from answer text. When the response contains structured function_call
+    output items, the raw text markers should not leak into output_text."""
+    if not text:
+        return text
+    cleaned = re.sub(r'##TOOL_CALL##[\s\S]*?(?:##END_CALL##|\$)', '', text)
+    cleaned = re.sub(r'<tool_call>[\s\S]*?(?:</tool_call>|\$)', '', cleaned)
+    cleaned = re.sub(r'<tool_calls>[\s\S]*?(?:</tool_calls>|\$)', '', cleaned)
+    return cleaned.strip()
+
+
 def build_responses_payload(
     *,
     response_id: str,
@@ -102,6 +116,8 @@ def build_responses_payload(
     if directive.stop_reason == "tool_use":
         # Convert tool blocks to function_call output items
         output = _tool_blocks_to_function_call_items(directive.tool_blocks)
+        # [ADDED 2026-06-05] Strip raw ##TOOL_CALL## markers from output_text
+        output_text = _strip_tool_call_blocks(output_text)
     else:
         output = [{
             "id": new_message_id(),
@@ -166,6 +182,8 @@ class ResponsesStreamTranslator:
         self.text_started = False
         self.answer_fragments: list[str] = []
         self.tool_calls: list = []
+        # [ADDED 2026-06-05] Buffer text to suppress ##TOOL_CALL## leakage
+        self._toolish_buffer: list[str] = []
 
     def _response_obj(self, *, status: str = "in_progress") -> dict[str, Any]:
         return _base_response_obj(
@@ -211,18 +229,16 @@ class ResponsesStreamTranslator:
             }))
             self.text_started = True
 
+    _TOOL_MARKER_RE = re.compile(r'##TOOL_CALL##|<tool_call>|<tool_calls>|\{"name"\s*:', re.IGNORECASE)
+
     def on_text_chunk(self, text_chunk: str):
+        """[ADDED 2026-06-05] Buffer all text. Content deltas are emitted in
+        finalize() after the bridge determines whether this is a tool call
+        or normal text. Prevents ##TOOL_CALL## markers from leaking."""
         if not text_chunk:
             return
         self._ensure_started()
-        self._ensure_text_item()
-        self.answer_fragments.append(text_chunk)
-        self.pending_chunks.append(self._wrap("response.output_text.delta", {
-            "item_id": self.item_id,
-            "output_index": self.output_index,
-            "content_index": self.content_index,
-            "delta": text_chunk,
-        }))
+        self._toolish_buffer.append(text_chunk)
 
     def on_tool_call(self, tool_call: dict):
         self.tool_calls.append(tool_call)
@@ -301,10 +317,25 @@ class ResponsesStreamTranslator:
 
         # If tool calls, emit function_call items instead of text completion
         if tool_blocks:
+            # [ADDED 2026-06-05] Discard buffered tool-like text
+            self._toolish_buffer.clear()
             for block in tool_blocks:
                 if block.get("type") == "tool_use":
                     self.emit_function_call(block)
-        elif self.text_started:
+            output_text = _strip_tool_call_blocks(output_text)
+            chunks.extend(self.drain())
+        else:
+            # [ADDED 2026-06-05] Flush buffered text as content
+            self._ensure_text_item()
+            buffered = "".join(self._toolish_buffer)
+            self._toolish_buffer.clear()
+            self.answer_fragments.append(buffered)
+            output_text = "".join(self.answer_fragments)
+            self.pending_chunks.append(self._wrap("response.output_text.delta", {
+                "item_id": self.item_id, "output_index": self.output_index,
+                "content_index": self.content_index, "delta": buffered,
+            }))
+            chunks.extend(self.drain())
             chunks.append(self._wrap("response.content_part.done", {
                 "item_id": self.item_id,
                 "output_index": self.output_index,
