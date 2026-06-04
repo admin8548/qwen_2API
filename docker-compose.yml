@@ -14,8 +14,6 @@ services:
       - ./logs:/workspace/logs
       - ./backend:/workspace/backend
       - ./frontend/dist:/workspace/frontend/dist
-      - ./backend:/workspace/backend
-      - ./frontend/dist:/workspace/frontend/dist
     shm_size: "512m"
     environment:
       PYTHONIOENCODING: utf-8
