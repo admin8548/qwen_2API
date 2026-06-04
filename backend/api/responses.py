@@ -226,8 +226,9 @@ async def responses_create(request: Request):
                             standard_request=standard_request,
                             request_payload=original_req_data,
                         )
-                        log.info("[Responses][stream] finalize response_id=%s", response_id)
-                        for chunk in translator.finalize(payload=payload):
+                        log.info("[Responses][stream] finalize response_id=%s tool_use=%s", response_id, directive.stop_reason == "tool_use")
+                        tool_blocks = directive.tool_blocks if directive.stop_reason == "tool_use" else None
+                        for chunk in translator.finalize(payload=payload, tool_blocks=tool_blocks):
                             yield chunk
                         log.info("[Responses][stream] completed response_id=%s", response_id)
                         return

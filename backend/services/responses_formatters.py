@@ -59,6 +59,30 @@ def _base_response_obj(
     }
 
 
+def _tool_blocks_to_function_call_items(tool_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert parsed tool blocks to Responses API function_call output items."""
+    items = []
+    for block in tool_blocks:
+        if block.get("type") != "tool_use":
+            continue
+        call_id = block.get("id") or f"call_{uuid.uuid4().hex[:24]}"
+        name = block.get("name", "")
+        raw_input = block.get("input", {})
+        if isinstance(raw_input, str):
+            arguments = raw_input
+        else:
+            arguments = json.dumps(raw_input, ensure_ascii=False)
+        items.append({
+            "id": f"fc_{uuid.uuid4().hex[:24]}",
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments,
+            "status": "completed",
+        })
+    return items
+
+
 def build_responses_payload(
     *,
     response_id: str,
@@ -76,7 +100,8 @@ def build_responses_payload(
     output_text = execution.state.answer_text or ""
 
     if directive.stop_reason == "tool_use":
-        output: list = []
+        # Convert tool blocks to function_call output items
+        output = _tool_blocks_to_function_call_items(directive.tool_blocks)
     else:
         output = [{
             "id": new_message_id(),
@@ -105,9 +130,18 @@ def sse_event(event: str, data: dict[str, Any]) -> str:
 class ResponsesStreamTranslator:
     """Emits SSE events matching OpenAI Responses API spec for Codex/Continue.dev.
 
-    OpenAI Responses API SSE event data includes a 'type' field matching
-    the event name, and wraps response-level payloads in a 'response' key.
-    Codex requires this structure to parse the stream.
+    Supports both text output and function_call output items.
+    Event sequence:
+      response.created -> response.in_progress -> response.output_item.added
+      -> response.content_part.added -> (N x response.output_text.delta)
+      -> response.content_part.done -> response.output_text.done
+      -> response.output_item.done -> response.completed
+
+    For function calls:
+      response.output_item.added (function_call)
+      -> response.function_call_arguments.delta
+      -> response.function_call_arguments.done
+      -> response.output_item.done
     """
 
     def __init__(
@@ -143,17 +177,14 @@ class ResponsesStreamTranslator:
         )
 
     def _wrap(self, event_type: str, data: dict[str, Any]) -> str:
-        """Wrap event data with type field per OpenAI Responses API spec."""
         data["type"] = event_type
         return sse_event(event_type, data)
 
     def _ensure_started(self):
         if not self.started:
-            # response.created — wrapped in "response" key
             self.pending_chunks.append(
                 self._wrap("response.created", {"response": self._response_obj(status="in_progress")})
             )
-            # response.in_progress
             self.pending_chunks.append(
                 self._wrap("response.in_progress", {"response": self._response_obj(status="in_progress")})
             )
@@ -162,7 +193,6 @@ class ResponsesStreamTranslator:
     def _ensure_text_item(self):
         if not self.text_started:
             self._ensure_started()
-            # response.output_item.added
             self.pending_chunks.append(self._wrap("response.output_item.added", {
                 "output_index": self.output_index,
                 "item": {
@@ -173,7 +203,6 @@ class ResponsesStreamTranslator:
                     "content": [],
                 },
             }))
-            # response.content_part.added
             self.pending_chunks.append(self._wrap("response.content_part.added", {
                 "item_id": self.item_id,
                 "output_index": self.output_index,
@@ -198,6 +227,54 @@ class ResponsesStreamTranslator:
     def on_tool_call(self, tool_call: dict):
         self.tool_calls.append(tool_call)
 
+    def emit_function_call(self, tool_block: dict[str, Any]):
+        """Emit a function_call output item for a parsed tool block."""
+        self._ensure_started()
+        call_id = tool_block.get("id") or f"call_{uuid.uuid4().hex[:24]}"
+        name = tool_block.get("name", "")
+        raw_input = tool_block.get("input", {})
+        arguments = json.dumps(raw_input, ensure_ascii=False) if not isinstance(raw_input, str) else raw_input
+        fc_id = f"fc_{uuid.uuid4().hex[:24]}"
+
+        fc_item = {
+            "id": fc_id,
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments,
+            "status": "completed",
+        }
+
+        self.pending_chunks.append(self._wrap("response.output_item.added", {
+            "output_index": self.output_index,
+            "item": {
+                "id": fc_id,
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": "",
+                "status": "in_progress",
+            },
+        }))
+
+        self.pending_chunks.append(self._wrap("response.function_call_arguments.delta", {
+            "item_id": fc_id,
+            "output_index": self.output_index,
+            "delta": arguments,
+        }))
+
+        self.pending_chunks.append(self._wrap("response.function_call_arguments.done", {
+            "item_id": fc_id,
+            "output_index": self.output_index,
+            "arguments": arguments,
+        }))
+
+        self.pending_chunks.append(self._wrap("response.output_item.done", {
+            "output_index": self.output_index,
+            "item": fc_item,
+        }))
+        self.output_index += 1
+
     def drain(self) -> list[str]:
         chunks = list(self.pending_chunks)
         self.pending_chunks.clear()
@@ -215,29 +292,31 @@ class ResponsesStreamTranslator:
         chunks.append("data: [DONE]\n\n")
         return chunks
 
-    def finalize(self, *, payload: dict[str, Any] | None = None) -> list[str]:
+    def finalize(self, *, payload: dict[str, Any] | None = None, tool_blocks: list[dict[str, Any]] | None = None) -> list[str]:
         self._ensure_started()
         final_payload = payload or {}
         output_text = final_payload.get("output_text") or "".join(self.answer_fragments)
 
         chunks = self.drain()
 
-        if self.text_started:
-            # response.content_part.done
+        # If tool calls, emit function_call items instead of text completion
+        if tool_blocks:
+            for block in tool_blocks:
+                if block.get("type") == "tool_use":
+                    self.emit_function_call(block)
+        elif self.text_started:
             chunks.append(self._wrap("response.content_part.done", {
                 "item_id": self.item_id,
                 "output_index": self.output_index,
                 "content_index": self.content_index,
                 "part": {"type": "output_text", "text": output_text, "annotations": []},
             }))
-            # response.output_text.done
             chunks.append(self._wrap("response.output_text.done", {
                 "item_id": self.item_id,
                 "output_index": self.output_index,
                 "content_index": self.content_index,
                 "text": output_text,
             }))
-            # response.output_item.done
             chunks.append(self._wrap("response.output_item.done", {
                 "output_index": self.output_index,
                 "item": {
@@ -260,7 +339,6 @@ class ResponsesStreamTranslator:
         if not final_payload.get("usage"):
             final_payload["usage"] = _usage(self.prompt, output_text)
 
-        # response.completed — wrapped in "response" key
         chunks.append(self._wrap("response.completed", {"response": final_payload}))
         chunks.append("data: [DONE]\n\n")
         return chunks
