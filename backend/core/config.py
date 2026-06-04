@@ -1,14 +1,28 @@
 import os
 import json
 from pathlib import Path
-from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings
 from typing import Dict, Set
+
+try:
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+except Exception:  # pragma: no cover - lightweight local-test fallback
+    class BaseSettings:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     # 服务配置
     PORT: int = int(os.getenv("PORT", 8080))
     WORKERS: int = int(os.getenv("WORKERS", 3))
@@ -16,10 +30,7 @@ class Settings(BaseSettings):
 
     # 并发配置（浏览器仅用于账号注册，不用于对话请求）
     BROWSER_POOL_SIZE: int = int(os.getenv("BROWSER_POOL_SIZE", 1))
-    MAX_INFLIGHT_PER_ACCOUNT: int = Field(
-        default=2,
-        validation_alias=AliasChoices("MAX_INFLIGHT_PER_ACCOUNT", "MAX_INFLIGHT"),
-    )
+    MAX_INFLIGHT_PER_ACCOUNT: int = int(os.getenv("MAX_INFLIGHT", 2))
     BROWSER_STREAM_TIMEOUT_SECONDS: int = int(os.getenv("BROWSER_STREAM_TIMEOUT_SECONDS", 1800))
 
     # 容灾与限流
@@ -30,16 +41,14 @@ class Settings(BaseSettings):
     REQUEST_JITTER_MAX_MS: int = int(os.getenv("REQUEST_JITTER_MAX_MS", 0))
     RATE_LIMIT_BASE_COOLDOWN: int = int(os.getenv("RATE_LIMIT_BASE_COOLDOWN", 600))
     RATE_LIMIT_MAX_COOLDOWN: int = int(os.getenv("RATE_LIMIT_MAX_COOLDOWN", 3600))
-    ACCOUNT_READY_SET_THRESHOLD: int = int(os.getenv("ACCOUNT_READY_SET_THRESHOLD", 128))
 
-    # 上游 chat 生命周期：默认每次请求结束后删除 Qwen 会话，删除失败有限重试。
-    CHAT_DELETE_RETRY_ATTEMPTS: int = int(os.getenv("CHAT_DELETE_RETRY_ATTEMPTS", 3))
-    CHAT_DELETE_RETRY_DELAY_SECONDS: float = float(os.getenv("CHAT_DELETE_RETRY_DELAY_SECONDS", 0.5))
-    CHAT_ID_PREWARM_TARGET_PER_ACCOUNT: int = int(os.getenv("CHAT_ID_PREWARM_TARGET_PER_ACCOUNT", 5))
-    CHAT_ID_PREWARM_TTL_SECONDS: int = int(os.getenv("CHAT_ID_PREWARM_TTL_SECONDS", 120))
-    CHAT_ID_PREWARM_MAX_CONCURRENCY: int = int(os.getenv("CHAT_ID_PREWARM_MAX_CONCURRENCY", 16))
-    TRACE_RESPONSE_FINGERPRINTS: bool = os.getenv("TRACE_RESPONSE_FINGERPRINTS", "").strip().lower() in {"1", "true", "yes", "on"}
-    TRACE_RESPONSE_TAIL_CHARS: int = int(os.getenv("TRACE_RESPONSE_TAIL_CHARS", 160))
+    # Chat ID 预热池（低风险默认：每账号每模型 1 个，TTL 180 秒）
+    CHAT_ID_POOL_ENABLED: bool = _env_bool("CHAT_ID_POOL_ENABLED", True)
+    CHAT_ID_POOL_TARGET_PER_ACCOUNT: int = int(os.getenv("CHAT_ID_POOL_TARGET_PER_ACCOUNT", 1))
+    CHAT_ID_POOL_TTL_SECONDS: int = int(os.getenv("CHAT_ID_POOL_TTL_SECONDS", 180))
+    CHAT_ID_POOL_REFILL_INTERVAL_SECONDS: int = int(os.getenv("CHAT_ID_POOL_REFILL_INTERVAL_SECONDS", 30))
+    CHAT_ID_POOL_FAILURE_COOLDOWN_SECONDS: int = int(os.getenv("CHAT_ID_POOL_FAILURE_COOLDOWN_SECONDS", 60))
+    CHAT_ID_POOL_MODELS: str = os.getenv("CHAT_ID_POOL_MODELS", "qwen3.6-plus")
 
     # 日志
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -62,9 +71,6 @@ class Settings(BaseSettings):
     CONTEXT_ALLOWED_GENERATED_EXTS: str = os.getenv("CONTEXT_ALLOWED_GENERATED_EXTS", "txt,md,json,log")
     CONTEXT_ALLOWED_USER_EXTS: str = os.getenv("CONTEXT_ALLOWED_USER_EXTS", "txt,md,json,log,xml,yaml,yml,csv,html,css,py,js,ts,java,c,cpp,cs,php,go,rb,sh,zsh,ps1,bat,cmd,pdf,doc,docx,ppt,pptx,xls,xlsx,png,jpg,jpeg,webp,gif,tiff,bmp,svg")
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
 
 API_KEYS_FILE = DATA_DIR / "api_keys.json"
 
@@ -120,6 +126,15 @@ MODEL_MAP = {
     "qwen-max":          "qwen3.6-plus",
     "qwen-plus":         "qwen3.6-plus",
     "qwen-turbo":        "qwen3.5-flash",
+    "qwen3.6-max":       "qwen3.6-plus",
+    # qwen3.7-max — passed through as-is (upstream supports it directly)
+    # Common aliases for Codex/Continue.dev
+    "qwen3.5-8b":        "qwen3.5-flash",
+    "qwen3.5-7b":        "qwen3.5-flash",
+    "qwen3-8b":          "qwen3.5-flash",
+    "qwen3-7b":          "qwen3.5-flash",
+    "qwen2.5-7b":        "qwen3.5-flash",
+    "qwen2.5-coder-7b":  "qwen3.5-flash",
     # DeepSeek
     "deepseek-chat":     "qwen3.6-plus",
     "deepseek-reasoner": "qwen3.6-plus",
