@@ -115,6 +115,8 @@ class RuntimeAttemptState:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     blocked_tool_names: list[str] = field(default_factory=list)
     finish_reason: str = "stop"
+    upstream_finish_reason: str = ""
+    had_prompt_leakage: bool = False
     empty_upstream_response: bool = False
     raw_events: list[dict[str, Any]] = field(default_factory=list)
     emitted_visible_output: bool = False
@@ -1306,6 +1308,8 @@ async def collect_completion_run(
     first_event_marked = False
     raw_events: list[dict[str, Any]] = []
     metrics = StreamMetrics()
+    upstream_finish_reason: str = ""
+    from backend.services.truncation_recovery import strip_prompt_leakage
 
     # 鍒濆鍖?Tool Sieve 鐢ㄤ簬瀹炴椂妫€娴?
     tool_sieve = None
@@ -1343,6 +1347,13 @@ async def collect_completion_run(
         reasoning_text = "".join(reasoning_fragments)
         if native_tool_calls and not answer_text:
             answer_text = native_tool_calls_to_markup(native_tool_calls)
+
+        # Strip prompt leakage (model echoing prompt content after output token exhaustion)
+        had_leakage = False
+        if answer_text and not native_tool_calls:
+            answer_text, had_leakage = strip_prompt_leakage(answer_text)
+            if had_leakage:
+                log.warning("[Collect] prompt leakage stripped from answer_text, remaining_len=%d", len(answer_text))
 
         # 鍏抽敭淇锛氬己鍒惰В鏋愭渶缁堟枃鏈腑鐨勫伐鍏疯皟鐢?
         detected_tool_calls = native_tool_calls or (rejected_tool_calls if reason == "invalid_tool_args" else [])
@@ -1475,6 +1486,8 @@ async def collect_completion_run(
             tool_calls=detected_tool_calls,
             blocked_tool_names=extract_blocked_tool_names(answer_text.strip(), request.tool_names),
             finish_reason=final_finish_reason,
+            upstream_finish_reason=upstream_finish_reason,
+            had_prompt_leakage=had_leakage,
             empty_upstream_response=empty_upstream_response,
             raw_events=raw_events,
             emitted_visible_output=emitted_visible_output,
@@ -1524,6 +1537,7 @@ async def collect_completion_run(
         chat_type=request_chat_type,
         thinking_enabled=getattr(request, "thinking_enabled", None),
         enable_search=bool(getattr(request, "enable_search", False)),
+        reasoning_effort=getattr(request, "reasoning_effort", None),
     ):
         if item.get("type") == "meta":
             chat_id = item.get("chat_id")
@@ -1547,6 +1561,15 @@ async def collect_completion_run(
         evt = item.get("event", {})
         if capture_events:
             raw_events.append(evt)
+        # Capture upstream finish_reason (e.g. "length" when output token limit hit)
+        if evt.get("type") == "upstream_finish":
+            ufr = evt.get("finish_reason", "")
+            if ufr:
+                upstream_finish_reason = ufr
+            if ufr == "length":
+                log.warning("[Collect] Upstream finish_reason=length detected — output token limit hit")
+            continue
+
         if evt.get("type") != "delta":
             continue
 
@@ -1753,8 +1776,11 @@ async def collect_completion_run_with_recovery(
     """
     from backend.services.truncation_recovery import (
         build_continuation_prompt,
+        build_text_continuation_prompt,
         deduplicate_continuation,
+        is_plain_text_truncated,
         is_truncated,
+        strip_prompt_leakage,
     )
     from backend.services.incremental_text_streamer import IncrementalTextStreamer
 
@@ -1784,41 +1810,59 @@ async def collect_completion_run_with_recovery(
         history_messages=history_messages,
     )
 
-    # 鑻?warmup 杩樹繚鐣欑潃灏鹃儴锛宖lush 鍑哄幓
-    if streamer is not None and on_delta is not None:
-        tail = streamer.finish()
+    # If streaming guard is active, flush only the sanitized final text from the
+    # first upstream attempt.  Do this before continuation so client-visible
+    # ordering remains: original text tail -> continuation text.
+    if streamer is not None and on_delta is not None and not result.state.tool_calls:
+        tail = streamer.finish_with(result.state.answer_text)
         if tail:
             await on_delta({"phase": "answer"}, tail, None)
 
-    # 鎴柇缁啓
     continues = 0
     while continues < max_continuation:
         state = result.state
-        # 鏈夊凡妫€鍑虹殑宸ュ叿璋冪敤灏变笉缁啓锛堣瀹㈡埛绔幓鎵ц閭ｄ釜 tool锛?
+        # 有已检出的工具调用就不续写（让客户端去执行那个 tool）
         if state.tool_calls:
             break
-        # No tools: skip recovery; without QNML/legacy marker context plain text can false-positive.
-        if not request.tools:
-            break
-        if not is_truncated(state.answer_text):
+
+        # Determine which type of truncation we're dealing with
+        # Strong signal: upstream explicitly said "length" (output token limit hit)
+        upstream_says_length = state.upstream_finish_reason == "length"
+        tool_truncated = bool(request.tools) and is_truncated(state.answer_text)
+        text_truncated = is_plain_text_truncated(state.answer_text) or upstream_says_length
+
+        # Prompt leakage is a definitive truncation signal
+        if state.had_prompt_leakage:
+            text_truncated = True
+            log.info("[TruncRecover] prompt leakage detected — treating as truncated")
+
+        if not tool_truncated and not text_truncated:
             break
 
         continues += 1
+        trunc_type = "tool-call" if tool_truncated else "plain-text"
         log.info(
-            "[TruncRecover] detected unclosed tool call, continuation attempt=%d chat_id=%s len=%d",
-            continues, result.chat_id, len(state.answer_text),
+            "[TruncRecover] detected %s truncation, continuation attempt=%d chat_id=%s len=%d upstream_fr=%s leakage=%s",
+            trunc_type, continues, result.chat_id, len(state.answer_text),
+            state.upstream_finish_reason or "-", state.had_prompt_leakage,
         )
 
-        assistant_ctx, followup = build_continuation_prompt(state.answer_text, anchor_chars=2000)
+        if tool_truncated:
+            assistant_ctx, followup = build_continuation_prompt(state.answer_text, anchor_chars=2000)
+        else:
+            assistant_ctx, followup = build_text_continuation_prompt(state.answer_text, anchor_chars=800)
         # 缁啓 prompt = 鍘?prompt + assistant 宸茶緭鍑虹殑閿氱偣 + user 缁啓鎸囦护
         cont_prompt = (
             f"{prompt.rstrip()}\n\nAssistant: {assistant_ctx}\n\nHuman: {followup}\n\nAssistant:"
         )
 
+        # Collect continuation silently, then emit only the deduplicated and
+        # prompt-leakage-cleaned suffix.  Streaming the raw continuation chunks
+        # directly can leak prompt text or duplicate overlapped anchor text.
         cont_result = await collect_completion_run(
             client, request, cont_prompt,
             capture_events=False,
-            on_delta=on_delta,  # 不经过 streamer，续写内容直接透传
+            on_delta=None if on_delta is not None else None,
             history_messages=history_messages,
         )
         try:
@@ -1839,17 +1883,24 @@ async def collect_completion_run_with_recovery(
                 tool_calls=cont_result.state.tool_calls or state.tool_calls,
                 blocked_tool_names=cont_result.state.blocked_tool_names or state.blocked_tool_names,
                 finish_reason=cont_result.state.finish_reason or state.finish_reason,
+                # Do not keep a stale first-attempt "length" forever after a
+                # successful continuation.  Otherwise a complete continuation
+                # can still force all max_continuation attempts.
+                upstream_finish_reason=cont_result.state.upstream_finish_reason,
+                had_prompt_leakage=cont_result.state.had_prompt_leakage,
                 raw_events=state.raw_events,
                 emitted_visible_output=state.emitted_visible_output or cont_result.state.emitted_visible_output,
                 stage_metrics=state.stage_metrics,
             )
             result = RuntimeExecutionResult(state=merged_state, chat_id=result.chat_id, acc=result.acc)
+            if on_delta is not None and deduped:
+                await on_delta({"phase": "answer"}, deduped, None)
             log.info(
                 "[TruncRecover] continuation=%d produced %d new chars; total=%d",
                 continues, len(deduped), len(merged_answer),
             )
             # 鑻ョ画鍐欏畬鎴愬悗宸查棴鍚堝垯鏀跺伐
-            if not is_truncated(merged_answer):
+            if not is_truncated(merged_answer) and not is_plain_text_truncated(merged_answer):
                 break
         finally:
             bound_account = getattr(request, "bound_account", None)

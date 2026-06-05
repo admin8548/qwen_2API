@@ -53,8 +53,16 @@ class Settings(BaseSettings):
     CHAT_ID_POOL_FAILURE_COOLDOWN_SECONDS: int = int(os.getenv("CHAT_ID_POOL_FAILURE_COOLDOWN_SECONDS", 60))
     CHAT_ID_POOL_MODELS: str = os.getenv("CHAT_ID_POOL_MODELS", "qwen3.6-plus")
 
+    # Response trace / debug fingerprint
+    TRACE_RESPONSE_FINGERPRINTS: bool = _env_bool("TRACE_RESPONSE_FINGERPRINTS", False)
+    TRACE_RESPONSE_TAIL_CHARS: int = int(os.getenv("TRACE_RESPONSE_TAIL_CHARS", "240"))
+
     # 日志
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # Chat deletion retries
+    CHAT_DELETE_RETRY_ATTEMPTS: int = int(os.getenv("CHAT_DELETE_RETRY_ATTEMPTS", "3"))
+    CHAT_DELETE_RETRY_DELAY_SECONDS: float = float(os.getenv("CHAT_DELETE_RETRY_DELAY_SECONDS", "0.5"))
 
     # 数据文件路径
     ACCOUNTS_FILE: str = os.getenv("ACCOUNTS_FILE", str(DATA_DIR / "accounts.json"))

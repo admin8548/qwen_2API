@@ -91,6 +91,30 @@ class IncrementalTextStreamer:
             return ""
         return self._emit_up_to(len(self._raw))
 
+    def finish_with(self, final_text: str) -> str:
+        """Flush only text that is present in the sanitized final answer.
+
+        ``finish()`` releases the raw guarded tail.  That is unsafe when the
+        caller cleaned the final answer after the stream ended (for example by
+        stripping prompt leakage).  This helper emits the remaining suffix of
+        ``final_text`` beyond what has already been sent and never emits bytes
+        that are absent from the final sanitized answer.
+        """
+        final_text = final_text or ""
+        if not final_text:
+            return ""
+        if len(final_text) <= len(self._sent):
+            return ""
+        if final_text.startswith(self._sent):
+            delta = final_text[len(self._sent):]
+            self._sent = final_text
+            if delta:
+                self._sent_any = True
+            return delta
+        # Sanitization changed already-sent text.  We cannot retract chunks that
+        # have reached the client, so do not emit a conflicting duplicate here.
+        return ""
+
     @property
     def unlocked(self) -> bool:
         return self._unlocked
@@ -98,6 +122,10 @@ class IncrementalTextStreamer:
     @property
     def sent_any(self) -> bool:
         return self._sent_any
+
+    @property
+    def sent_text(self) -> str:
+        return self._sent
 
     @property
     def raw_text(self) -> str:

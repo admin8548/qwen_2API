@@ -4,6 +4,7 @@ services:
     container_name: qwen2api
     restart: unless-stopped
     init: true
+    stop_grace_period: 3s
     env_file:
       - path: .env
         required: false

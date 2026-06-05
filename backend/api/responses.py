@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -34,6 +35,13 @@ log = logging.getLogger("qwen2api.responses")
 router = APIRouter()
 
 _KEEPALIVE_INTERVAL = 0.5
+
+
+def _store_response(app, response_id: str, payload: dict, original_request: dict) -> None:
+    """Persist a completed response for later retrieval (compact / get)."""
+    store = getattr(app.state, "response_store", None)
+    if store is not None:
+        store.put(response_id, payload, original_request)
 
 
 def _build_standard_request(req_data: dict[str, Any]) -> StandardRequest:
@@ -144,10 +152,17 @@ async def responses_create(request: Request):
                         async def on_delta(evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
                             nonlocal delta_count
                             delta_count += 1
-                            translator.on_text_chunk(text_chunk or "")
+                            phase = evt.get("phase", "")
+                            if tool_calls:
+                                for tool_call in tool_calls:
+                                    translator.on_tool_call(tool_call)
+                            elif phase in ("think", "thinking_summary") and text_chunk:
+                                translator.on_reasoning_chunk(text_chunk)
+                            elif text_chunk:
+                                translator.on_text_chunk(text_chunk)
                             delta_event.set()
                             if delta_count <= 5 or delta_count % 50 == 0:
-                                log.info("[Responses][stream] delta response_id=%s phase=%s len=%s count=%s", response_id, evt.get("phase"), len(text_chunk or ""), delta_count)
+                                log.info("[Responses][stream] delta response_id=%s phase=%s len=%s tool_calls=%s count=%s", response_id, phase, len(text_chunk or ""), len(tool_calls or []), delta_count)
 
                         # Mock streaming — skip real upstream entirely
                         if isinstance(mock_upstream, MockUpstream) and getattr(mock_upstream, 'stream_mode', False):
@@ -167,6 +182,7 @@ async def responses_create(request: Request):
                                 for chunk in translator.finalize(payload=payload):
                                     yield chunk
                                 log.info("[Responses][stream] completed mock response_id=%s", response_id)
+                                _store_response(app, response_id, payload, original_req_data)
                                 return
 
                         # Real upstream streaming
@@ -231,6 +247,7 @@ async def responses_create(request: Request):
                         for chunk in translator.finalize(payload=payload, tool_blocks=tool_blocks):
                             yield chunk
                         log.info("[Responses][stream] completed response_id=%s", response_id)
+                        _store_response(app, response_id, payload, original_req_data)
                         return
                     except HTTPException as he:
                         await clear_invalidated_session_chat(app=app, request=standard_request)
@@ -291,6 +308,7 @@ async def responses_create(request: Request):
             request_payload=original_req_data,
         )
         log.info("[Responses][non-stream] mock response built, response_id=%s", response_id)
+        _store_response(app, response_id, mock_payload, original_req_data)
         return JSONResponse(mock_payload)
 
     # Non-streaming path
@@ -322,17 +340,17 @@ async def responses_create(request: Request):
                 execution=execution,
                 assistant_message=assistant_message,
             )
-            return JSONResponse(
-                build_responses_payload(
-                    response_id=response_id,
-                    created_at=created_at,
-                    model_name=model_name,
-                    prompt=result.prompt,
-                    execution=execution,
-                    standard_request=standard_request,
-                    request_payload=original_req_data,
-                )
+            _payload = build_responses_payload(
+                response_id=response_id,
+                created_at=created_at,
+                model_name=model_name,
+                prompt=result.prompt,
+                execution=execution,
+                standard_request=standard_request,
+                request_payload=original_req_data,
             )
+            _store_response(app, response_id, _payload, original_req_data)
+            return JSONResponse(_payload)
     except EmptyUpstreamResponseError as e:
         await clear_invalidated_session_chat(app=app, request=standard_request)
         raise HTTPException(
@@ -342,3 +360,124 @@ async def responses_create(request: Request):
     except Exception as e:
         await clear_invalidated_session_chat(app=app, request=standard_request)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Sub-endpoints: get / compact / input_items ────────────────────────────────
+
+@router.get("/responses/{response_id}")
+@router.get("/v1/responses/{response_id}")
+async def responses_get(response_id: str, request: Request):
+    """Retrieve a previously-created response by its ID."""
+    store = getattr(request.app.state, "response_store", None)
+    if store is None:
+        raise HTTPException(503, {"error": {"message": "Response store not available", "type": "server_error"}})
+    entry = store.get(response_id)
+    if entry is None:
+        raise HTTPException(404, {"error": {"message": f"Response '{response_id}' not found", "type": "not_found_error"}})
+    log.info("[Responses] GET response_id=%s compacted=%s", response_id, entry.compacted)
+    return JSONResponse(entry.payload)
+
+
+@router.post("/responses/{response_id}/compact")
+@router.post("/v1/responses/{response_id}/compact")
+async def responses_compact(response_id: str, request: Request):
+    """Compact / summarise the context of an existing response.
+
+    Phase B: calls upstream model to produce a real context summary.
+    Falls back to truncation if upstream is unavailable.
+    """
+    store = getattr(request.app.state, "response_store", None)
+    if store is None:
+        raise HTTPException(503, {"error": {"message": "Response store not available", "type": "server_error"}})
+    entry = store.get(response_id)
+    if entry is None:
+        raise HTTPException(404, {"error": {"message": f"Response '{response_id}' not found", "type": "not_found_error"}})
+
+    if entry.compacted:
+        log.info("[Responses] compact already applied for response_id=%s", response_id)
+        return JSONResponse(entry.payload)
+
+    # ── Phase B: real compression via upstream model ──────────
+    from backend.services.response_compressor import compress_conversation
+    client: QwenClient = request.app.state.qwen_client
+    preferred_email = getattr(entry, "original_request", {})
+    preferred_email = (
+        preferred_email.get("metadata", {}).get("account_email")
+        if isinstance(preferred_email.get("metadata"), dict)
+        else None
+    )
+
+    try:
+        compacted = await compress_conversation(
+            client=client,
+            original_request=entry.original_request,
+            original_response=entry.payload,
+            account_pool=request.app.state.account_pool,
+            preferred_account_email=preferred_email,
+        )
+    except Exception as exc:
+        log.exception("[Responses] compact compression failed for response_id=%s", response_id)
+        raise HTTPException(502, {"error": {"message": f"Compression failed: {exc}", "type": "server_error"}})
+
+    # Mark the original as compacted
+    store.mark_compacted(response_id, compacted)
+    # Store the new compacted response under its own ID
+    store.put(compacted["id"], compacted, entry.original_request)
+
+    log.info("[Responses] compact done: old_id=%s new_id=%s", response_id, compacted["id"])
+    return JSONResponse(compacted)
+
+
+@router.get("/responses/{response_id}/input_items")
+@router.get("/v1/responses/{response_id}/input_items")
+async def responses_input_items(response_id: str, request: Request):
+    """List input items for an existing response (stub).
+
+    Returns the original request's `input` field wrapped in the
+    standard list envelope expected by Responses API clients.
+    """
+    store = getattr(request.app.state, "response_store", None)
+    if store is None:
+        raise HTTPException(503, {"error": {"message": "Response store not available", "type": "server_error"}})
+    entry = store.get(response_id)
+    if entry is None:
+        raise HTTPException(404, {"error": {"message": f"Response '{response_id}' not found", "type": "not_found_error"}})
+
+    raw_input = entry.original_request.get("input", "")
+    if isinstance(raw_input, str):
+        items = [{
+            "id": f"item_{uuid.uuid4().hex[:24]}",
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": raw_input}],
+            "status": "completed",
+        }]
+    elif isinstance(raw_input, list):
+        items = []
+        for item in raw_input:
+            if isinstance(item, str):
+                items.append({
+                    "id": f"item_{uuid.uuid4().hex[:24]}",
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": item}],
+                    "status": "completed",
+                })
+            elif isinstance(item, dict):
+                # Ensure every item has an id for the list envelope
+                normalized = dict(item)
+                if "id" not in normalized:
+                    normalized["id"] = f"item_{uuid.uuid4().hex[:24]}"
+                if "status" not in normalized:
+                    normalized["status"] = "completed"
+                items.append(normalized)
+    else:
+        items = []
+
+    return JSONResponse({
+        "object": "list",
+        "data": items,
+        "first_id": items[0]["id"] if items else None,
+        "last_id": items[-1]["id"] if items else None,
+        "has_more": False,
+    })

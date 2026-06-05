@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
         app.state.context_offloader = ContextOffloader(settings)
         app.state.upstream_file_uploader = UpstreamFileUploader(app.state.qwen_client, settings)
         app.state.session_locks = SessionLockRegistry()
+        from backend.core.response_store import ResponseStore
+        app.state.response_store = ResponseStore()
 
         # 加载账号并启动后台清理任务
         await app.state.account_pool.load()

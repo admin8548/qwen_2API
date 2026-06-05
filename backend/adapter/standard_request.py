@@ -45,3 +45,4 @@ class StandardRequest:
     retry_blocked_tools: list[str] = field(default_factory=list)
     retry_read_blocklist: list[str] = field(default_factory=list)
     skip_prewarmed_chat_ids: bool = False
+    reasoning_effort: str | None = None  # "low" / "medium" / "high" — mapped from Codex reasoning.effort

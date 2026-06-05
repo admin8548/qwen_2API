@@ -9,7 +9,7 @@ CUSTOM_TOOL_COMPAT_FEATURE_CONFIG = {
     "auto_thinking": True,
     "thinking_mode": "Auto",
     "thinking_format": "summary",
-    "auto_search": False,
+    "auto_search": True,
     "code_interpreter": False,
     "plugins_enabled": False,
 }
@@ -26,14 +26,49 @@ UPSTREAM_IMAGE_CHAT_TYPE = "t2i"
 UPSTREAM_VIDEO_CHAT_TYPE = "t2v"
 
 
-def _apply_thinking_config(feature_config: dict, enabled: bool) -> None:
+def _apply_thinking_config(feature_config: dict, enabled: bool, reasoning_effort: str | None = None) -> None:
+    """Apply thinking configuration to feature_config.
+
+    Qwen upstream supports three thinking modes:
+      - "Auto"      → model decides whether to think (auto_thinking=True)
+      - "Thinking"  → always think (auto_thinking=False)
+      - "Disabled"  → never think (auto_thinking=False)
+
+    reasoning_effort maps:
+      - "high"   → "Thinking" (always think)
+      - "medium" → "Auto" (model decides)
+      - "low"    → "Disabled" (no thinking)
+      - None     → use enabled parameter: enabled→"Auto", !enabled→"Disabled"
+    """
+    if reasoning_effort == "high":
+        mode = "Thinking"
+        auto = False
+        enabled = True
+    elif reasoning_effort == "medium":
+        mode = "Auto"
+        auto = True
+        enabled = True
+    elif reasoning_effort == "low":
+        mode = "Disabled"
+        auto = False
+        enabled = False
+    elif enabled:
+        mode = "Auto"
+        auto = True
+    else:
+        mode = "Disabled"
+        auto = False
+        enabled = False
     feature_config.update(
         {
             "thinking_enabled": enabled,
-            "auto_thinking": enabled,
-            "thinking_mode": "Auto" if enabled else "Disabled",
+            "auto_thinking": auto,
+            "thinking_mode": mode,
         }
     )
+    # Qwen web UI sets auto_search=true when thinking is enabled
+    if enabled and mode in ("Thinking", "Auto"):
+        feature_config["auto_search"] = True
 
 
 def normalize_upstream_chat_type(chat_type: str) -> str:
@@ -52,7 +87,7 @@ def _build_image_feature_config(image_options: dict) -> dict:
         "output_schema": "phase",
         "auto_thinking": False,
         "thinking_mode": "off",
-        "auto_search": False,
+        "auto_search": True,
         "code_interpreter": False,
         "function_calling": False,
         "plugins_enabled": True,
@@ -68,7 +103,7 @@ def _build_video_feature_config(video_options: dict) -> dict:
         "output_schema": "phase",
         "auto_thinking": False,
         "thinking_mode": "off",
-        "auto_search": False,
+        "auto_search": True,
         "code_interpreter": False,
         "function_calling": False,
         "plugins_enabled": True,
@@ -87,6 +122,7 @@ def build_chat_payload(
     image_options: dict | None = None,
     thinking_enabled: bool | None = None,
     enable_search: bool = False,
+    reasoning_effort: str | None = None,
 ) -> dict:
     ts = int(time.time())
     is_image_gen = chat_type in IMAGE_CHAT_TYPES
@@ -116,20 +152,15 @@ def build_chat_payload(
         feature_config = {
             **CUSTOM_TOOL_COMPAT_FEATURE_CONFIG,
             **(CUSTOM_TOOL_LOW_LATENCY_OVERRIDES if has_custom_tools else {}),
-            # Our Anthropic/OpenAI bridge relies on textual JSON/XML tool directives
-            # that are parsed locally. Enabling Qwen native function_calling here causes
-            # upstream interception such as `Tool Read/Bash does not exists.` for custom
-            # local tools that only exist in the bridge layer.
             "function_calling": False,
-            # Additional safeguards to prevent tool call interception
             "enable_tools": False,
             "enable_function_call": False,
             "tool_choice": "none",
-            "auto_search": bool(enable_search or chat_type == "deep_research"),
+            "auto_search": True,
             "plugins_enabled": False,
         }
         if thinking_enabled is not None:
-            _apply_thinking_config(feature_config, bool(thinking_enabled))
+            _apply_thinking_config(feature_config, bool(thinking_enabled), reasoning_effort=reasoning_effort)
         message_chat_type = chat_type
         sub_chat_type = chat_type
         message_extra_meta = {"subChatType": chat_type}

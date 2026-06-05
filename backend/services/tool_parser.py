@@ -377,6 +377,62 @@ def _parse_json_string_for_schema(value: str, *, want_array: bool, want_object: 
     return value, False
 
 
+
+def _coerce_array_string_fallback(tool_name: str, key: str, value: str, schema: dict[str, Any]) -> list[str] | None:
+    """Best-effort repair when a model emits an array field as plain text.
+
+    JSON decoding is handled earlier.  This fallback is intentionally limited
+    to string arrays and common delimiter/token patterns so we do not mutate
+    arbitrary scalar strings.
+    """
+    item_schema = schema.get("items")
+    item_types = _schema_types(item_schema) if isinstance(item_schema, dict) else set()
+    if item_types and "string" not in item_types:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return []
+
+    enum_values = []
+    if isinstance(item_schema, dict) and isinstance(item_schema.get("enum"), list):
+        enum_values = [str(x) for x in item_schema.get("enum") if isinstance(x, str) and x]
+    if enum_values:
+        lowered = stripped.lower()
+        found = [item for item in enum_values if item.lower() in lowered]
+        if found:
+            return found
+
+    import re
+    parts = [p.strip().strip('"\'') for p in re.split(r"[,;，；\s]+", stripped) if p.strip().strip('"\'')]
+    if len(parts) > 1:
+        return parts
+
+    # Targeted fallback for status/check-list style fields where upstream may
+    # concatenate known check names without separators.
+    if key.split(".")[-1].lower() in {"checks", "check", "tests", "validations"}:
+        known = [
+            "responses_stream",
+            "response_stream",
+            "healthz",
+            "health",
+            "logs",
+            "log",
+            "errors",
+            "metrics",
+        ]
+        lowered = stripped.lower()
+        found = [token for token in known if token in lowered]
+        if found:
+            canonical = {"response_stream": "responses_stream", "health": "healthz", "log": "logs"}
+            out = []
+            for token in found:
+                mapped = canonical.get(token, token)
+                if mapped not in out:
+                    out.append(mapped)
+            return out
+
+    return None
+
 def _coerce_value_by_schema(tool_name: str, key: str, value: Any, schema: Any) -> Any:
     if not isinstance(schema, dict):
         return value
@@ -397,6 +453,16 @@ def _coerce_value_by_schema(tool_name: str, key: str, value: Any, schema: Any) -
             value = parsed
 
     if want_array:
+        if isinstance(value, str):
+            fallback = _coerce_array_string_fallback(tool_name, key, value, schema)
+            if fallback is not None:
+                log.info(
+                    "[ToolCoerce] schema split string array: tool=%s field=%s items=%s",
+                    tool_name,
+                    key,
+                    len(fallback),
+                )
+                value = fallback
         if isinstance(value, dict):
             value = [value]
         if isinstance(value, list):

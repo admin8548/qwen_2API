@@ -528,6 +528,7 @@ class QwenClient:
         image_options: dict | None = None,
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
+        reasoning_effort: str | None = None,
     ):
         async for event in self.executor.stream(
             token,
@@ -599,6 +600,7 @@ class QwenClient:
         image_options: dict | None = None,
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
+        reasoning_effort: str | None = None,
     ):
         async for item in self.executor.chat_stream_events_with_retry(
             model,

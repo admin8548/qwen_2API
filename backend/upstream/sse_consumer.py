@@ -48,6 +48,10 @@ def parse_sse_chunk(chunk: str) -> list[dict]:
             delta = evt["choices"][0].get("delta", {})
             phase = delta.get("phase", "answer")
             content = delta.get("content", "")
+
+
+
+
             reasoning = _extract_reasoning(delta)
             if reasoning:
                 content = reasoning
@@ -66,4 +70,16 @@ def parse_sse_chunk(chunk: str) -> list[dict]:
                     "extra": delta.get("extra", {}),
                 }
             )
+
+            # Capture upstream finish_reason signal (e.g. "length" when output token limit hit)
+            upstream_finish = evt["choices"][0].get("finish_reason")
+            if upstream_finish:
+                parsed.append({
+                    "type": "upstream_finish",
+                    "finish_reason": upstream_finish,
+                })
+                if upstream_finish == "length":
+                    log.warning("[SSE] Upstream signaled finish_reason=length (output token limit hit)")
+
+
     return parsed

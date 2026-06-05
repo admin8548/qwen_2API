@@ -45,3 +45,43 @@ fix_*.py
 tests/
 docs/superpowers/
 *.tsbuildinfo
+
+# Security: prevent accidental credential commits
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.keystore
+secrets/
+secret/
+credentials/
+*.credentials
+docker-compose.override.yml
+
+# Runtime artifacts
+*.pid
+*.sock
+.pid
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Data directory contents (extra safety)
+data/accounts.json
+data/api_keys.json
+data/users.json
+data/session_affinity.json
+data/context_cache.json
+data/captures.json
+data/uploaded_files.json
+data/context_files/
+
+# Keep targeted regression tests for truncation recovery visible.
+!tests/
+!tests/test_truncation_recovery.py
+!tests/test_responses_compat.py
+
+# Local Python virtualenv
+.venv/

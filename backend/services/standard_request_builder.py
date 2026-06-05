@@ -37,11 +37,25 @@ def _extract_thinking_enabled(req_data: dict) -> bool | None:
     return None
 
 
+def _extract_reasoning_effort(req_data: dict) -> str | None:
+    """Extract reasoning effort from OpenAI-style reasoning.effort field."""
+    reasoning = req_data.get("reasoning")
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if isinstance(effort, str) and effort.strip().lower() in ("low", "medium", "high"):
+            return effort.strip().lower()
+    return None
+
+
 def build_chat_standard_request(req_data: dict, *, default_model: str, surface: str, client_profile: str = "openclaw_openai") -> StandardRequest:
     requested_model = req_data.get("model", default_model)
     model_mode = parse_model_mode(requested_model, default_model=default_model)
     explicit_thinking = _extract_thinking_enabled(req_data)
     thinking_enabled = True if model_mode.force_thinking else explicit_thinking
+    reasoning_effort = _extract_reasoning_effort(req_data)
+    # reasoning_effort implicitly enables thinking
+    if reasoning_effort and thinking_enabled is None:
+        thinking_enabled = True
     enable_search = bool(_coerce_bool(req_data.get("enable_search")) or False)
     if model_mode.mode == "search":
         enable_search = True
@@ -68,4 +82,5 @@ def build_chat_standard_request(req_data: dict, *, default_model: str, surface: 
         enable_search=enable_search,
         model_mode=model_mode.mode,
         skip_prewarmed_chat_ids=model_mode.chat_type != "t2t",
+        reasoning_effort=reasoning_effort,
     )

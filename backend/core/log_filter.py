@@ -58,6 +58,10 @@ class SimplifiedLogFilter(logging.Filter):
             if re.search(pattern, msg):
                 return False
 
+        # 保留错误/异常链路可读性
+        if record.levelno >= logging.ERROR or record.exc_info not in (None, (None, None, None)):
+            return True
+
         # 检查是否需要简化
         for pattern, replacement in self.SIMPLIFY_PATTERNS.items():
             match = re.search(pattern, msg)

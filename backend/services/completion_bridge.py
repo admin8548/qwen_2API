@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable
 import logging
 
 from backend.adapter.standard_request import StandardRequest
-from backend.runtime.execution import build_tool_directive, cleanup_runtime_resources, collect_completion_run, evaluate_retry_directive
+from backend.runtime.execution import build_tool_directive, cleanup_runtime_resources, collect_completion_run, collect_completion_run_with_recovery, evaluate_retry_directive
 from backend.services.auth_quota import add_used_tokens
 from backend.services.task_session import build_retry_rebase_prompt
 from backend.services.token_calc import calculate_usage
@@ -60,12 +60,15 @@ async def run_completion_bridge(
     capture_events: bool = True,
     on_delta: Callable[[dict[str, Any], str | None, list[dict[str, Any]] | None], Awaitable[None]] | None = None,
 ) -> CompletionBridgeResult:
-    execution = await collect_completion_run(
+    execution = await collect_completion_run_with_recovery(
         client,
         standard_request,
         prompt,
         capture_events=capture_events,
         on_delta=on_delta,
+        max_continuation=3,
+        warmup_chars=(64 if on_delta is not None else 0),
+        guard_chars=(256 if on_delta is not None else 0),
     )
     if is_empty_upstream_response(execution):
         force_fresh_chat_after_empty_response(standard_request)
@@ -101,13 +104,16 @@ async def run_retryable_completion_bridge(
         standard_request.full_prompt = prompt
 
     for attempt_index in range(max_attempts):
-        execution = await collect_completion_run(
+        execution = await collect_completion_run_with_recovery(
             client,
             standard_request,
             current_prompt,
             capture_events=capture_events,
             on_delta=on_delta,
             history_messages=history_messages,
+            max_continuation=3,
+            warmup_chars=(64 if on_delta is not None else 0),
+            guard_chars=(256 if on_delta is not None else 0),
         )
         retry = evaluate_retry_directive(
             request=standard_request,
@@ -169,4 +175,3 @@ async def run_retryable_completion_bridge(
         )
 
     raise RuntimeError("Retryable completion bridge exhausted attempts")
-

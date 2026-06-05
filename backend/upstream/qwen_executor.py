@@ -167,6 +167,7 @@ class QwenExecutor:
         image_options: dict | None = None,
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
+        reasoning_effort: str | None = None,
     ):
         stream_fn = getattr(self.engine, "stream_chat_once", None) or getattr(self.engine, "fetch_chat", None)
         if stream_fn is None:
@@ -182,6 +183,7 @@ class QwenExecutor:
             image_options=image_options,
             thinking_enabled=thinking_enabled,
             enable_search=enable_search,
+            reasoning_effort=reasoning_effort,
         )
         buffer = ""
         started_at = time.perf_counter()
@@ -194,6 +196,7 @@ class QwenExecutor:
         feature_config = payload.get("messages", [{}])[0].get("feature_config", {})
         prompt_len = len(content)
         log.info(f"[上游] 开始流式 会话={chat_id} 模型={model} 自定义工具={has_custom_tools} prompt长度={prompt_len} ({prompt_len/1024:.1f}KB)")
+
         test_markers = find_test_markers(content)
         if test_markers or settings.TRACE_RESPONSE_FINGERPRINTS:
             log.info(

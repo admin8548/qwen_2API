@@ -10,7 +10,7 @@ from backend.adapter.cli_proxy import CLIProxy
 from backend.core.config import resolve_model
 from backend.core.request_logging import new_request_id, request_context, update_request_context
 from backend.runtime import stream_presenter
-from backend.runtime.execution import collect_completion_run, cleanup_runtime_resources
+from backend.runtime.execution import collect_completion_run, collect_completion_run_with_recovery, cleanup_runtime_resources
 from backend.runtime.visible_text import VisibleTextSanitizer, sanitize_visible_text
 from backend.services.auth_quota import resolve_auth_context
 from backend.services.completion_bridge import force_fresh_chat_after_empty_response, is_empty_upstream_response
@@ -66,7 +66,7 @@ async def gemini_generate_content(model: str, request: Request):
         log.info(f"[Gemini] route=generateContent model={standard_request.resolved_model}, stream={standard_request.stream}, prompt_len={len(content)}")
 
         try:
-            execution = await collect_completion_run(client, standard_request, content)
+            execution = await collect_completion_run_with_recovery(client, standard_request, content, max_continuation=3)
             if is_empty_upstream_response(execution):
                 force_fresh_chat_after_empty_response(standard_request)
                 await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=False)
@@ -122,12 +122,13 @@ async def gemini_stream_generate_content(model: str, request: Request):
             async def runner():
                 execution = None
                 try:
-                    execution = await collect_completion_run(
+                    execution = await collect_completion_run_with_recovery(
                         client,
                         standard_request,
                         content,
                         capture_events=False,
                         on_delta=on_delta,
+                        max_continuation=3,
                     )
                     if is_empty_upstream_response(execution):
                         force_fresh_chat_after_empty_response(standard_request)
