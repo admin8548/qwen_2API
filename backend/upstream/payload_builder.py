@@ -123,6 +123,7 @@ def build_chat_payload(
     thinking_enabled: bool | None = None,
     enable_search: bool = False,
     reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict:
     ts = int(time.time())
     is_image_gen = chat_type in IMAGE_CHAT_TYPES
@@ -161,6 +162,12 @@ def build_chat_payload(
         }
         if thinking_enabled is not None:
             _apply_thinking_config(feature_config, bool(thinking_enabled), reasoning_effort=reasoning_effort)
+        if max_output_tokens is not None and max_output_tokens > 0:
+            # Qwen web payloads are not fully documented; include the limit in
+            # both feature_config and top-level compatibility fields below so
+            # upstream variants that honor any common spelling can enforce it.
+            feature_config["max_tokens"] = int(max_output_tokens)
+            feature_config["max_output_tokens"] = int(max_output_tokens)
         message_chat_type = chat_type
         sub_chat_type = chat_type
         message_extra_meta = {"subChatType": chat_type}
@@ -193,6 +200,11 @@ def build_chat_payload(
         ],
         "timestamp": ts,
     }
+    if max_output_tokens is not None and max_output_tokens > 0:
+        limit = int(max_output_tokens)
+        payload["max_tokens"] = limit
+        payload["max_output_tokens"] = limit
+        payload["max_new_tokens"] = limit
     if is_image_gen or is_video_gen:
         payload["size"] = _image_ratio(image_options)
     return payload

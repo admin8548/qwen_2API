@@ -117,6 +117,7 @@ class RuntimeAttemptState:
     finish_reason: str = "stop"
     upstream_finish_reason: str = ""
     had_prompt_leakage: bool = False
+    incomplete_reason: str | None = None
     empty_upstream_response: bool = False
     raw_events: list[dict[str, Any]] = field(default_factory=list)
     emitted_visible_output: bool = False
@@ -1538,6 +1539,7 @@ async def collect_completion_run(
         thinking_enabled=getattr(request, "thinking_enabled", None),
         enable_search=bool(getattr(request, "enable_search", False)),
         reasoning_effort=getattr(request, "reasoning_effort", None),
+        max_output_tokens=getattr(request, "max_output_tokens", None),
     ):
         if item.get("type") == "meta":
             chat_id = item.get("chat_id")
@@ -1780,6 +1782,7 @@ async def collect_completion_run_with_recovery(
         deduplicate_continuation,
         is_plain_text_truncated,
         is_truncated,
+        is_explicit_max_output_truncated,
         strip_prompt_leakage,
     )
     from backend.services.incremental_text_streamer import IncrementalTextStreamer
@@ -1828,6 +1831,18 @@ async def collect_completion_run_with_recovery(
         # Determine which type of truncation we're dealing with
         # Strong signal: upstream explicitly said "length" (output token limit hit)
         upstream_says_length = state.upstream_finish_reason == "length"
+        explicit_max_output_truncated = is_explicit_max_output_truncated(
+            state.answer_text,
+            getattr(request, "max_output_tokens", None),
+        )
+        if explicit_max_output_truncated:
+            state.incomplete_reason = "max_output_tokens"
+            log.info(
+                "[TruncRecover] explicit max_output_tokens limit reached; marking incomplete without continuation len=%d limit=%s",
+                len(state.answer_text),
+                getattr(request, "max_output_tokens", None),
+            )
+            break
         tool_truncated = bool(request.tools) and is_truncated(state.answer_text)
         text_truncated = is_plain_text_truncated(state.answer_text) or upstream_says_length
 
@@ -1888,6 +1903,7 @@ async def collect_completion_run_with_recovery(
                 # can still force all max_continuation attempts.
                 upstream_finish_reason=cont_result.state.upstream_finish_reason,
                 had_prompt_leakage=cont_result.state.had_prompt_leakage,
+                incomplete_reason=cont_result.state.incomplete_reason,
                 raw_events=state.raw_events,
                 emitted_visible_output=state.emitted_visible_output or cont_result.state.emitted_visible_output,
                 stage_metrics=state.stage_metrics,

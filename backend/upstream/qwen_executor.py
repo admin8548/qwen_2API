@@ -168,6 +168,7 @@ class QwenExecutor:
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
     ):
         stream_fn = getattr(self.engine, "stream_chat_once", None) or getattr(self.engine, "fetch_chat", None)
         if stream_fn is None:
@@ -184,6 +185,7 @@ class QwenExecutor:
             thinking_enabled=thinking_enabled,
             enable_search=enable_search,
             reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
         )
         buffer = ""
         started_at = time.perf_counter()
@@ -207,7 +209,7 @@ class QwenExecutor:
                 prompt_len,
                 prompt_tail(content),
             )
-        log.info(f"[上游] 功能配置: chat_type={chat_type} thinking_enabled={feature_config.get('thinking_enabled')} auto_thinking={feature_config.get('auto_thinking')} thinking_mode={feature_config.get('thinking_mode')} function_calling={feature_config.get('function_calling')} auto_search={feature_config.get('auto_search')} code_interpreter={feature_config.get('code_interpreter')} plugins_enabled={feature_config.get('plugins_enabled')} default_aspect_ratio={feature_config.get('default_aspect_ratio')} image_size={feature_config.get('image_size')} image_ratio={feature_config.get('image_ratio')}")
+        log.info(f"[上游] 功能配置: chat_type={chat_type} thinking_enabled={feature_config.get('thinking_enabled')} auto_thinking={feature_config.get('auto_thinking')} thinking_mode={feature_config.get('thinking_mode')} function_calling={feature_config.get('function_calling')} auto_search={feature_config.get('auto_search')} max_output_tokens={payload.get('max_output_tokens') or feature_config.get('max_output_tokens')} code_interpreter={feature_config.get('code_interpreter')} plugins_enabled={feature_config.get('plugins_enabled')} default_aspect_ratio={feature_config.get('default_aspect_ratio')} image_size={feature_config.get('image_size')} image_ratio={feature_config.get('image_ratio')}")
 
         prompt_content = payload.get("messages", [{}])[0].get("content", "")
         if has_custom_tools:
@@ -303,6 +305,8 @@ class QwenExecutor:
         image_options: dict | None = None,
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
+        reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
     ):
         exclude = set()
         last_error_message: str | None = None
@@ -335,6 +339,8 @@ class QwenExecutor:
                         image_options=image_options,
                         thinking_enabled=thinking_enabled,
                         enable_search=enable_search,
+                        reasoning_effort=reasoning_effort,
+                        max_output_tokens=max_output_tokens,
                     ):
                         yield {"type": "event", "event": evt}
                 finally:
@@ -381,6 +387,8 @@ class QwenExecutor:
                         image_options=image_options,
                         thinking_enabled=thinking_enabled,
                         enable_search=enable_search,
+                        reasoning_effort=reasoning_effort,
+                        max_output_tokens=max_output_tokens,
                     ):
                         yield {"type": "event", "event": evt}
                 finally:

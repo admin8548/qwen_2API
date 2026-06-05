@@ -500,6 +500,8 @@ class QwenClient:
         image_options: dict | None = None,
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
+        reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> dict:
         return build_chat_payload(
             chat_id,
@@ -511,6 +513,8 @@ class QwenClient:
             image_options=image_options,
             thinking_enabled=thinking_enabled,
             enable_search=enable_search,
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
         )
 
     def parse_sse_chunk(self, chunk: str) -> list[dict]:
@@ -529,6 +533,7 @@ class QwenClient:
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
     ):
         async for event in self.executor.stream(
             token,
@@ -541,6 +546,8 @@ class QwenClient:
             image_options=image_options,
             thinking_enabled=thinking_enabled,
             enable_search=enable_search,
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
         ):
             yield event
 
@@ -601,6 +608,7 @@ class QwenClient:
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
     ):
         async for item in self.executor.chat_stream_events_with_retry(
             model,
@@ -615,5 +623,7 @@ class QwenClient:
             image_options=image_options,
             thinking_enabled=thinking_enabled,
             enable_search=enable_search,
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
         ):
             yield item

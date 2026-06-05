@@ -110,3 +110,10 @@ class TruncationRecoveryStateMachineTests(unittest.TestCase):
             self.assertEqual("".join(emitted), result.state.answer_text)
 
         asyncio.run(run())
+
+class ExplicitMaxOutputIncompleteTests(unittest.TestCase):
+    def test_explicit_max_output_short_markdown_tail_detected(self):
+        from backend.services.truncation_recovery import is_explicit_max_output_truncated
+        text = "# 核心交易服务中断恢复验证报告\n\n**报告编号：** INC-20260605-001\n**"
+        self.assertTrue(is_explicit_max_output_truncated(text, 30))
+        self.assertFalse(is_explicit_max_output_truncated("短句完成。", 30))

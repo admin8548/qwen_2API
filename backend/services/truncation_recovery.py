@@ -274,6 +274,24 @@ def is_plain_text_truncated(text: str, *, min_len: int = 120) -> bool:
     return False
 
 
+
+def is_explicit_max_output_truncated(text: str, max_output_tokens: int | None) -> bool:
+    """Detect client-requested output cap truncation without auto-continuing.
+
+    If the caller explicitly asks for a small max_output_tokens, the upstream may
+    stop with finish_reason=stop and no explicit length signal.  In Responses API
+    semantics this should be reported as incomplete due to max_output_tokens, not
+    silently continued beyond the caller's limit.
+    """
+    if not max_output_tokens or max_output_tokens <= 0 or not text:
+        return False
+    # Character/token ratios vary by language; use a conservative upper bound to
+    # decide whether the visible answer is plausibly capped by the requested
+    # output budget.
+    if len(text.rstrip()) > int(max_output_tokens) * 4 + 32:
+        return False
+    return is_plain_text_truncated(text, min_len=8)
+
 def build_text_continuation_prompt(
     partial_response: str,
     anchor_chars: int = 800,

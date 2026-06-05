@@ -141,16 +141,20 @@ def build_responses_payload(
             "content": [{"type": "output_text", "text": output_text, "annotations": []}],
         })
 
-    return _base_response_obj(
+    incomplete_reason = getattr(execution.state, "incomplete_reason", None)
+    payload = _base_response_obj(
         response_id=response_id,
         created_at=created,
         model_name=model_name,
-        status="completed",
+        status="incomplete" if incomplete_reason else "completed",
         output=output,
         output_text=output_text,
         usage=_usage(prompt, output_text, reasoning_text),
         request_payload=request_payload,
     )
+    if incomplete_reason:
+        payload["incomplete_details"] = {"reason": incomplete_reason}
+    return payload
 
 
 def sse_event(event: str, data: dict[str, Any]) -> str:

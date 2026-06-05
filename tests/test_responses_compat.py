@@ -215,3 +215,53 @@ class ToolSchemaCoercionTests(unittest.TestCase):
         self.assertEqual(stop, "tool_use")
         call = next(b for b in blocks if b.get("type") == "tool_use")
         self.assertEqual(call["input"]["checks"], ["responses_stream", "healthz", "logs"])
+
+class MaxOutputTokenMappingTests(unittest.TestCase):
+    def test_responses_max_output_tokens_reaches_standard_request_and_payload(self):
+        from backend.services.responses_adapter import adapt_responses_request_to_chat
+        from backend.services.standard_request_builder import build_chat_standard_request
+        from backend.upstream.payload_builder import build_chat_payload
+
+        adapted = adapt_responses_request_to_chat({
+            "model": "gpt-5",
+            "input": "write a long answer",
+            "max_output_tokens": "23",
+            "reasoning": {"effort": "low"},
+        })
+        standard = build_chat_standard_request(adapted, default_model="gpt-3.5-turbo", surface="responses")
+        self.assertEqual(standard.max_output_tokens, 23)
+        self.assertEqual(standard.reasoning_effort, "low")
+
+        payload = build_chat_payload(
+            "chat_1",
+            standard.resolved_model,
+            standard.prompt,
+            thinking_enabled=standard.thinking_enabled,
+            reasoning_effort=standard.reasoning_effort,
+            max_output_tokens=standard.max_output_tokens,
+        )
+        feature_config = payload["messages"][0]["feature_config"]
+        self.assertEqual(payload["max_output_tokens"], 23)
+        self.assertEqual(payload["max_tokens"], 23)
+        self.assertEqual(payload["max_new_tokens"], 23)
+        self.assertEqual(feature_config["max_output_tokens"], 23)
+        self.assertEqual(feature_config["max_tokens"], 23)
+        self.assertEqual(feature_config["thinking_mode"], "Disabled")
+
+class ResponsesIncompletePayloadTests(unittest.TestCase):
+    def test_incomplete_reason_sets_responses_status(self):
+        tools = []
+        state = RuntimeAttemptState(answer_text="partial **")
+        state.incomplete_reason = "max_output_tokens"
+        execution = RuntimeExecutionResult(state, chat_id=None, acc=None)
+        payload = build_responses_payload(
+            response_id="resp_incomplete",
+            created_at=123,
+            model_name="gpt-4o-mini",
+            prompt="Human: hi",
+            execution=execution,
+            standard_request=ResponsesFormatterTests()._request(tools),
+            request_payload={"max_output_tokens": 30},
+        )
+        self.assertEqual(payload["status"], "incomplete")
+        self.assertEqual(payload["incomplete_details"], {"reason": "max_output_tokens"})
