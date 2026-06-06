@@ -1857,12 +1857,30 @@ async def collect_completion_run_with_recovery(
             )
             break
         tool_truncated = bool(request.tools) and is_truncated(state.answer_text)
-        text_truncated = is_plain_text_truncated(state.answer_text) or upstream_says_length
+        heuristic_plain_text_truncated = is_plain_text_truncated(state.answer_text)
+        # Plain-text continuation is intentionally gated by authoritative
+        # upstream/runtime signals.  A heuristic tail check alone is too weak:
+        # many valid technical/list answers end without sentence punctuation
+        # (file paths, backticks, list items), and auto-continuing them causes
+        # visible repetition.  Keep heuristic detection for explicit client
+        # max-output handling, but do not use it as a standalone reason to
+        # generate extra text.
+        text_truncated = upstream_says_length
 
         # Prompt leakage is a definitive truncation signal
         if state.had_prompt_leakage:
             text_truncated = True
             log.info("[TruncRecover] prompt leakage detected — treating as truncated")
+
+        if (
+            heuristic_plain_text_truncated
+            and not text_truncated
+            and not tool_truncated
+        ):
+            log.info(
+                "[TruncRecover] heuristic plain-text tail detected without upstream length/leakage; not auto-continuing len=%d",
+                len(state.answer_text),
+            )
 
         if not tool_truncated and not text_truncated:
             break

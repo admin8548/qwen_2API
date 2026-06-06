@@ -89,6 +89,54 @@ if __name__ == "__main__":
     unittest.main()
 
 class TruncationRecoveryStateMachineTests(unittest.TestCase):
+    def test_plain_text_heuristic_without_upstream_length_does_not_continue(self):
+        import asyncio
+        from backend.adapter.standard_request import StandardRequest
+        from backend.runtime.execution import collect_completion_run_with_recovery
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat_stream_events_with_retry(self, *args, **kwargs):
+                self.calls += 1
+                yield {"type": "meta", "chat_id": f"chat_{self.calls}", "acc": None}
+                text = "这是一个技术清单输出，最后一行是路径并且没有句号：\n- `backend/services/responses_formatters.py`"
+                for i in range(0, len(text), 13):
+                    yield {"type": "event", "event": {"type": "delta", "phase": "answer", "content": text[i:i+13]}}
+
+        async def run():
+            request = StandardRequest(
+                prompt="Human: 输出技术清单\n\nAssistant:",
+                response_model="gpt-5",
+                resolved_model="qwen3.6-plus",
+                surface="responses",
+                stream=True,
+            )
+            emitted = []
+
+            async def on_delta(evt, text, tool_calls):
+                if text:
+                    emitted.append(text)
+
+            client = FakeClient()
+            result = await collect_completion_run_with_recovery(
+                client,
+                request,
+                request.prompt,
+                capture_events=True,
+                on_delta=on_delta,
+                max_continuation=3,
+                warmup_chars=1,
+                guard_chars=16,
+            )
+            self.assertEqual(client.calls, 1)
+            self.assertEqual(result.state.upstream_finish_reason, "")
+            self.assertTrue(result.state.answer_text.endswith("`backend/services/responses_formatters.py`"))
+            self.assertEqual("".join(emitted), result.state.answer_text)
+
+        asyncio.run(run())
+
     def test_length_finish_triggers_single_sanitized_continuation(self):
         import asyncio
         from backend.adapter.standard_request import StandardRequest
