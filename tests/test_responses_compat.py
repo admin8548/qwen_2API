@@ -60,6 +60,47 @@ class ResponsesAdapterTests(unittest.TestCase):
         self.assertIn("web_search_preview", standard.tool_names)
         self.assertTrue(standard.tool_enabled)
 
+    def test_codex_repeated_context_snapshots_keep_latest_only(self):
+        developer_a = (
+            "<permissions instructions>\n"
+            "Filesystem sandboxing defines which files can be read or written.\n"
+            "</permissions instructions>\n"
+            "<skills_instructions>old skills</skills_instructions>"
+        )
+        developer_b = (
+            "<permissions instructions>\n"
+            "Filesystem sandboxing defines which files can be read or written.\n"
+            "</permissions instructions>\n"
+            "<skills_instructions>new skills</skills_instructions>"
+        )
+        workspace_old = (
+            "# AGENTS.md instructions for d:\\Project\\hvdc\\trunk\n"
+            "<INSTRUCTIONS>old agent rules</INSTRUCTIONS>\n"
+            "<environment_context><current_date>2026-06-05</current_date></environment_context>"
+        )
+        workspace_new = (
+            "# AGENTS.md instructions for d:\\Project\\hvdc\\trunk\n"
+            "<INSTRUCTIONS>new agent rules</INSTRUCTIONS>\n"
+            "<environment_context><current_date>2026-06-06</current_date></environment_context>"
+        )
+        payload = adapt_responses_request_to_chat({
+            "input": [
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": developer_a}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": workspace_old}]},
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": developer_b}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": workspace_new}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "当前有哪些skills？"}]},
+            ],
+        })
+        texts = [json.dumps(m.get("content"), ensure_ascii=False) for m in payload["messages"]]
+        joined = "\n".join(texts)
+        self.assertEqual(len(payload["messages"]), 3)
+        self.assertNotIn("old skills", joined)
+        self.assertNotIn("old agent rules", joined)
+        self.assertIn("new skills", joined)
+        self.assertIn("new agent rules", joined)
+        self.assertIn("当前有哪些skills？", joined)
+
 
 class ResponsesFormatterTests(unittest.TestCase):
     def _request(self, tools=None):

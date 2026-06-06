@@ -6,9 +6,13 @@ the standard Chat Completions format consumed by the prompt/pipeline layer.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import re
 from typing import Any
+
+log = logging.getLogger("qwen2api.responses_adapter")
 
 
 _HOSTED_TOOL_DESCRIPTION = (
@@ -103,6 +107,75 @@ def _message_item_to_chat_message(item: dict[str, Any]) -> dict[str, Any] | None
     return msg
 
 
+def _message_text_for_dedupe(message: dict[str, Any]) -> str:
+    return _extract_content_text(message.get("content", ""))
+
+
+def _context_snapshot_key(message: dict[str, Any]) -> tuple[str, str] | None:
+    """Return a stable key for repeated Codex context snapshots.
+
+    Codex/Responses clients may send full developer/environment snapshots in
+    every request.  Treat those as replace-by-latest context, not conversation
+    turns; otherwise the upstream prompt grows with repeated copies of the same
+    AGENTS/developer blocks and the model can echo/repeat them.
+    """
+    role = str(message.get("role") or "")
+    text = _message_text_for_dedupe(message)
+    if not text:
+        return None
+
+    if role in {"system", "developer"} and "<permissions instructions>" in text and "<skills_instructions>" in text:
+        return ("codex_developer_snapshot", "")
+
+    stripped = text.lstrip()
+    if role == "user" and stripped.startswith("# AGENTS.md instructions for ") and "<environment_context>" in text:
+        first_line = stripped.splitlines()[0].strip()
+        return ("codex_workspace_snapshot", first_line)
+
+    # Exact large duplicate blocks are almost always repeated context rather
+    # than useful dialogue turns.  Keep the latest copy to preserve current
+    # environment details while shrinking prompt history.
+    if len(text) >= 1000:
+        digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+        return ("large_exact", f"{role}:{digest}")
+
+    return None
+
+
+def _dedupe_context_snapshots(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not messages:
+        return messages
+
+    last_for_key: dict[tuple[str, str], int] = {}
+    keys: list[tuple[str, str] | None] = []
+    for idx, msg in enumerate(messages):
+        key = _context_snapshot_key(msg)
+        keys.append(key)
+        if key is not None:
+            last_for_key[key] = idx
+
+    if not last_for_key:
+        return messages
+
+    out: list[dict[str, Any]] = []
+    removed = 0
+    for idx, msg in enumerate(messages):
+        key = keys[idx]
+        if key is not None and last_for_key.get(key) != idx:
+            removed += 1
+            continue
+        out.append(msg)
+
+    if removed:
+        log.info(
+            "[ResponsesAdapter] deduped repeated context snapshots removed=%d kept=%d original=%d",
+            removed,
+            len(out),
+            len(messages),
+        )
+    return out
+
+
 def _function_call_item_to_chat_message(item: dict[str, Any]) -> dict[str, Any]:
     call_id = str(item.get("call_id") or item.get("id") or "call_unknown")
     name = str(item.get("name") or "")
@@ -139,11 +212,11 @@ def responses_input_to_messages(input_value: Any, *, instructions: str = "") -> 
 
     if isinstance(input_value, str):
         messages.append({"role": "user", "content": input_value})
-        return messages
+        return _dedupe_context_snapshots(messages)
 
     if not isinstance(input_value, list):
         messages.append({"role": "user", "content": _as_text(input_value)})
-        return messages
+        return _dedupe_context_snapshots(messages)
 
     for item in input_value:
         if isinstance(item, str):
@@ -168,7 +241,7 @@ def responses_input_to_messages(input_value: Any, *, instructions: str = "") -> 
 
         messages.append({"role": "user", "content": _normalize_message_content([item])})
 
-    return messages
+    return _dedupe_context_snapshots(messages)
 
 
 def _safe_tool_name(value: str) -> str:
