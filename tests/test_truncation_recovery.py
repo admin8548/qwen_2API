@@ -22,6 +22,18 @@ class TruncationRecoveryTests(unittest.TestCase):
         text = "服务已经恢复，非流式和流式接口都可以正常返回完整响应。"
         self.assertFalse(is_plain_text_truncated(text, min_len=20))
 
+    def test_plain_text_technical_tail_without_period_not_truncated(self):
+        text = (
+            "验证结论：接口已返回完整响应，关键文件如下：\n"
+            "- `backend/api/responses.py`\n"
+            "- `backend/services/responses_formatters.py`"
+        )
+        self.assertFalse(is_plain_text_truncated(text, min_len=20))
+
+    def test_plain_text_trailing_colon_still_detected(self):
+        text = "下面是完整排查结论，最后一项还没有展开："
+        self.assertTrue(is_plain_text_truncated(text, min_len=20))
+
     def test_high_confidence_prompt_leakage_can_trim_large_tail(self):
         clean = "这是用户应该看到的最终回答。"
         leaked = (
@@ -52,6 +64,25 @@ class TruncationRecoveryTests(unittest.TestCase):
         existing = "第一段内容。第二段内容继续生成到这里"
         continuation = "第二段内容继续生成到这里，并完成句子。"
         self.assertEqual(deduplicate_continuation(existing, continuation), "，并完成句子。")
+
+    def test_deduplicate_continuation_restarted_tail_paragraph(self):
+        existing = (
+            "一、现象：流式内容已经输出。\n"
+            "二、根因：Responses 流式桥接没有实时 drain pending chunks，"
+            "导致客户端只在结束时收到一批事件。\n"
+            "三、修复："
+        )
+        continuation = (
+            "二、根因：Responses 流式桥接没有实时 drain pending chunks，"
+            "导致客户端只在结束时收到一批事件。\n"
+            "三、修复：补齐实时 drain，并避免续写重复。"
+        )
+        self.assertEqual(deduplicate_continuation(existing, continuation), "补齐实时 drain，并避免续写重复。")
+
+    def test_deduplicate_continuation_strips_meta_preamble(self):
+        existing = "最后一句还没有"
+        continuation = "继续：完成，并自然结束。"
+        self.assertEqual(deduplicate_continuation(existing, continuation), "完成，并自然结束。")
 
 
 if __name__ == "__main__":

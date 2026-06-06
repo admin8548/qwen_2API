@@ -131,6 +131,21 @@ class ResponsesFormatterTests(unittest.TestCase):
         self.assertIn('"delta": "Hel"', stream)
         self.assertIn("event: response.completed", stream)
 
+    def test_stream_finalize_emits_missing_payload_tail_once(self):
+        translator = ResponsesStreamTranslator(response_id="resp_tail", created_at=123, model_name="gpt-4o-mini")
+        translator.on_delta({"phase": "answer"}, "已输出前半段", None)
+        execution = RuntimeExecutionResult(RuntimeAttemptState(answer_text="已输出前半段，补齐尾部。"), chat_id=None, acc=None)
+        payload = build_responses_payload(
+            response_id="resp_tail",
+            created_at=123,
+            model_name="gpt-4o-mini",
+            prompt="Human: hi",
+            execution=execution,
+            standard_request=self._request(),
+        )
+        stream = "".join(translator.finalize(payload=payload))
+        self.assertEqual(stream.count('"delta": "，补齐尾部。"'), 1)
+        self.assertIn('"text": "已输出前半段，补齐尾部。"', stream)
 
     def test_stream_tool_call_does_not_leak_qnml_text_delta(self):
         translator = ResponsesStreamTranslator(response_id="resp_tool_stream", created_at=123, model_name="gpt-4o-mini")

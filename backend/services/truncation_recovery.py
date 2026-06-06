@@ -125,6 +125,9 @@ def deduplicate_continuation(existing: str, continuation: str) -> str:
     """Remove the longest duplicate overlap between existing tail and continuation head."""
     if not existing or not continuation:
         return continuation
+    continuation = _strip_continuation_preamble(continuation)
+    if not continuation:
+        return ""
     max_overlap = min(500, len(existing), len(continuation))
     if max_overlap < 10:
         return continuation
@@ -138,6 +141,16 @@ def deduplicate_continuation(existing: str, continuation: str) -> str:
 
     if best_overlap >= 10:
         return continuation[best_overlap:]
+
+    # If the continuation restarted from a sizeable earlier slice of the
+    # existing tail (common when the model ignores "do not repeat"), trim that
+    # repeated head even when it is not an exact suffix/prefix overlap.
+    tail_window = existing[-3000:]
+    head_window = continuation[:1200]
+    for length in range(min(len(head_window), 800), 79, -1):
+        snippet = continuation[:length]
+        if snippet and tail_window.rfind(snippet) >= 0:
+            return continuation[length:]
 
     tail_lines = existing.splitlines()[-20:]
     cont_lines = continuation.splitlines()
@@ -157,8 +170,37 @@ def deduplicate_continuation(existing: str, continuation: str) -> str:
                         break
                 if matched >= 2:
                     return "\n".join(cont_lines[matched:])
+                if matched == 1 and len(first_cont) >= 40:
+                    return "\n".join(cont_lines[1:])
 
     return continuation
+
+
+_CONTINUATION_PREAMBLE_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:继续(?:如下|：|:)?\s*)|"
+    r"(?:以下是(?:继续|剩余)(?:内容|部分)?(?:：|:)?\s*)|"
+    r"(?:接着(?:上文|继续)?(?:：|:)?\s*)|"
+    r"(?:从(?:上次|刚才|截断处).*?(?:继续|开始)(?:：|:)?\s*)|"
+    r"(?:Sure[,，]?\s*)|"
+    r"(?:Continu(?:e|ing)(?: from where (?:I|we) stopped)?(?:\:)?\s*)|"
+    r"(?:Here is the continuation(?:\:)?\s*)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _strip_continuation_preamble(text: str) -> str:
+    """Remove meta prefaces that are not part of the user's answer."""
+    if not text:
+        return text
+    cleaned = text
+    for _ in range(3):
+        nxt = _CONTINUATION_PREAMBLE_RE.sub("", cleaned, count=1)
+        if nxt == cleaned:
+            break
+        cleaned = nxt
+    return cleaned
 
 
 def build_continuation_prompt(partial_response: str, anchor_chars: int = 2000) -> tuple[str, str]:
@@ -239,6 +281,10 @@ def is_plain_text_truncated(text: str, *, min_len: int = 120) -> bool:
         return True
     if re.match(r"^\d+[.)]\s*$", last_line):
         return True
+    if last_line.count("**") % 2 == 1:
+        return True
+    if last_line.count("`") % 2 == 1:
+        return True
     if last_line.startswith(("**", "`")) and last_line.count(last_line[:2] if last_line.startswith("**") else "`") % 2:
         return True
 
@@ -265,10 +311,8 @@ def is_plain_text_truncated(text: str, *, min_len: int = 120) -> bool:
     if last_line and last_line[-1] in ":,，：、":
         return True
 
-    # If the text doesn't end with any sentence-ending punctuation at all,
-    # and the last line has substantive content (not just a bullet marker,
-    # number, or whitespace), treat it as truncated.
-    if last_line and len(last_line) >= 4:
+    # A final dangling opening delimiter is a high-confidence incomplete tail.
+    if trimmed[-1] in "([{（【《“‘\"":
         return True
 
     return False

@@ -217,7 +217,15 @@ async def responses_create(request: Request):
                             try:
                                 await asyncio.wait_for(delta_event.wait(), timeout=_KEEPALIVE_INTERVAL)
                             except asyncio.TimeoutError:
-                                yield "event: ping\ndata: {}\n\n"
+                                pending = translator.drain_pending()
+                                if pending:
+                                    for chunk in pending:
+                                        yield chunk
+                                else:
+                                    yield "event: ping\ndata: {}\n\n"
+                            else:
+                                for chunk in translator.drain_pending():
+                                    yield chunk
 
                         try:
                             result = bridge_task.result() if not bridge_task.cancelled() else None

@@ -335,18 +335,23 @@ class ResponsesStreamTranslator:
             # Tool-like content detected — keep buffering
             return False
         # Clean text — emit as delta
-        self._ensure_text_item()
-        self.answer_fragments.append(combined)
-        self.pending_chunks.append(self._wrap("response.output_text.delta", {
-            "item_id": self.item_id,
-            "output_index": self.output_index,
-            "content_index": self.content_index,
-            "delta": combined,
-        }))
+        self._emit_text_delta(combined)
         self._toolish_buffer.clear()
         return True
 
     _TOOL_MARKER_RE = re.compile(r"##TOOL_CALL##|<tool_call>|<tool_calls>|<invoke>|<parameter>|<\|QNML\|", re.IGNORECASE)
+
+    def _emit_text_delta(self, text: str):
+        if not text:
+            return
+        self._ensure_text_item()
+        self.answer_fragments.append(text)
+        self.pending_chunks.append(self._wrap("response.output_text.delta", {
+            "item_id": self.item_id,
+            "output_index": self.output_index,
+            "content_index": self.content_index,
+            "delta": text,
+        }))
 
     def on_text_chunk(self, text_chunk: str):
         """Buffer text and flush in real-time when safe.
@@ -419,6 +424,10 @@ class ResponsesStreamTranslator:
         self.pending_chunks.clear()
         return chunks
 
+    def drain_pending(self) -> list[str]:
+        """Return and clear chunks that are safe to send immediately."""
+        return self.drain()
+
     def fail(self, error: dict | str) -> list[str]:
         self._ensure_started()
         error_obj = error if isinstance(error, dict) else {"message": str(error)}
@@ -434,7 +443,8 @@ class ResponsesStreamTranslator:
     def finalize(self, *, payload: dict[str, Any] | None = None, tool_blocks: list[dict[str, Any]] | None = None) -> list[str]:
         self._ensure_started()
         final_payload = payload or {}
-        output_text = final_payload.get("output_text") or "".join(self.answer_fragments)
+        payload_output_text = final_payload.get("output_text") or ""
+        output_text = payload_output_text or "".join(self.answer_fragments)
         if tool_blocks is None:
             payload_tool_blocks: list[dict[str, Any]] = []
             for item in final_payload.get("output") or []:
@@ -478,12 +488,24 @@ class ResponsesStreamTranslator:
             if self._toolish_buffer:
                 leftover = "".join(self._toolish_buffer)
                 self._toolish_buffer.clear()
-                self.answer_fragments.append(leftover)
-                self.pending_chunks.append(self._wrap("response.output_text.delta", {
-                    "item_id": self.item_id, "output_index": self.output_index,
-                    "content_index": self.content_index, "delta": leftover,
-                }))
-            output_text = "".join(self.answer_fragments)
+                self._emit_text_delta(leftover)
+            streamed_text = "".join(self.answer_fragments)
+            if payload_output_text:
+                if payload_output_text.startswith(streamed_text):
+                    missing_tail = payload_output_text[len(streamed_text):]
+                    if missing_tail:
+                        self._emit_text_delta(missing_tail)
+                    output_text = payload_output_text
+                elif not streamed_text:
+                    self._emit_text_delta(payload_output_text)
+                    output_text = payload_output_text
+                else:
+                    # Deltas already reached the client and cannot be
+                    # retracted. Keep the terminal done/completed payload
+                    # authoritative while avoiding a duplicate full replay.
+                    output_text = payload_output_text
+            else:
+                output_text = streamed_text
             chunks.extend(self.drain())
             chunks.append(self._wrap("response.content_part.done", {
                 "item_id": self.item_id,
