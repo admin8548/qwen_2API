@@ -61,8 +61,10 @@ export default function SettingsPage() {
   }, [])
 
   useEffect(() => {
-    fetchSettings()
-    fetchModels()
+    queueMicrotask(() => {
+      fetchSettings()
+      fetchModels()
+    })
   }, [fetchSettings, fetchModels])
 
   const handleSaveSessionKey = () => {

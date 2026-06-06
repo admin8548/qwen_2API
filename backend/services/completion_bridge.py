@@ -43,6 +43,7 @@ def is_empty_upstream_response(execution: Any) -> bool:
 
 def force_fresh_chat_after_empty_response(standard_request: StandardRequest) -> None:
     standard_request.skip_prewarmed_chat_ids = True
+    standard_request.force_direct_chat = True
     if getattr(standard_request, "persistent_session", False) and getattr(standard_request, "upstream_chat_id", None):
         standard_request.session_chat_invalidated = True
         standard_request.upstream_chat_id = None
@@ -73,7 +74,7 @@ async def run_completion_bridge(
     if is_empty_upstream_response(execution):
         force_fresh_chat_after_empty_response(standard_request)
         await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=False)
-        raise RuntimeError("empty upstream response")
+        raise EmptyUpstreamResponseError("empty_upstream_response")
     usage = calculate_usage(prompt, execution.state.answer_text)
     await add_used_tokens(users_db, token, usage_delta if usage_delta is not None else usage["total_tokens"])
     await cleanup_runtime_resources(
@@ -154,7 +155,7 @@ async def run_retryable_completion_bridge(
         if is_empty_upstream_response(execution):
             force_fresh_chat_after_empty_response(standard_request)
             await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=False)
-            raise RuntimeError("empty upstream response after retries")
+            raise EmptyUpstreamResponseError("empty_upstream_response_after_retries")
 
         usage = calculate_usage(current_prompt, execution.state.answer_text)
         usage_delta = usage_delta_factory(execution, current_prompt) if usage_delta_factory is not None else usage["total_tokens"]

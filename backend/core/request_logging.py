@@ -68,6 +68,7 @@ def configure_logging(level: int = logging.INFO) -> None:
             handler.addFilter(simplified_filter)
         root.addHandler(handler)
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.access").disabled = True
         return
 
     for handler in root.handlers:
@@ -77,6 +78,7 @@ def configure_logging(level: int = logging.INFO) -> None:
             handler.addFilter(simplified_filter)
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").disabled = True
 
 
 def new_request_id() -> str:

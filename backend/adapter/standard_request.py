@@ -45,5 +45,7 @@ class StandardRequest:
     retry_blocked_tools: list[str] = field(default_factory=list)
     retry_read_blocklist: list[str] = field(default_factory=list)
     skip_prewarmed_chat_ids: bool = False
+    force_direct_chat: bool = False
+    empty_retry_exclude: set[str] = field(default_factory=set)
     reasoning_effort: str | None = None  # "low" / "medium" / "high" — mapped from Codex reasoning.effort
     max_output_tokens: int | None = None

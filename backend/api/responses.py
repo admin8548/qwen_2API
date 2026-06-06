@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.adapter.standard_request import StandardRequest
+from backend.core.config import settings
 from backend.core.request_logging import new_request_id, request_context, update_request_context
 from backend.runtime.execution import build_tool_directive, build_usage_delta_factory, request_max_attempts
 from backend.services.attachment_preprocessor import preprocess_attachments
@@ -37,11 +38,22 @@ router = APIRouter()
 _KEEPALIVE_INTERVAL = 0.5
 
 
-def _store_response(app, response_id: str, payload: dict, original_request: dict) -> None:
+def _store_response(app, response_id: str, payload: dict, original_request: dict, *, owner_token: str = "") -> None:
     """Persist a completed response for later retrieval (compact / get)."""
     store = getattr(app.state, "response_store", None)
     if store is not None:
-        store.put(response_id, payload, original_request)
+        store.put(response_id, payload, original_request, owner_token=owner_token)
+
+
+async def _authorize_stored_response(request: Request, entry, auth_token: str | None = None) -> str:
+    """Require a valid API key and enforce response ownership for sub-endpoints."""
+    if auth_token is None:
+        auth = await resolve_auth_context(request, request.app.state.users_db)
+        auth_token = auth.token
+    owner_token = getattr(entry, "owner_token", "") or ""
+    if owner_token and auth_token != owner_token and auth_token != settings.ADMIN_KEY:
+        raise HTTPException(status_code=403, detail={"error": {"message": "Forbidden", "type": "forbidden"}})
+    return auth_token
 
 
 def _build_standard_request(req_data: dict[str, Any]) -> StandardRequest:
@@ -247,7 +259,7 @@ async def responses_create(request: Request):
                         for chunk in translator.finalize(payload=payload, tool_blocks=tool_blocks):
                             yield chunk
                         log.info("[Responses][stream] completed response_id=%s", response_id)
-                        _store_response(app, response_id, payload, original_req_data)
+                        _store_response(app, response_id, payload, original_req_data, owner_token=token)
                         return
                     except HTTPException as he:
                         await clear_invalidated_session_chat(app=app, request=standard_request)
@@ -349,7 +361,7 @@ async def responses_create(request: Request):
                 standard_request=standard_request,
                 request_payload=original_req_data,
             )
-            _store_response(app, response_id, _payload, original_req_data)
+            _store_response(app, response_id, _payload, original_req_data, owner_token=token)
             return JSONResponse(_payload)
     except EmptyUpstreamResponseError as e:
         await clear_invalidated_session_chat(app=app, request=standard_request)
@@ -371,9 +383,11 @@ async def responses_get(response_id: str, request: Request):
     store = getattr(request.app.state, "response_store", None)
     if store is None:
         raise HTTPException(503, {"error": {"message": "Response store not available", "type": "server_error"}})
+    auth = await resolve_auth_context(request, request.app.state.users_db)
     entry = store.get(response_id)
     if entry is None:
         raise HTTPException(404, {"error": {"message": f"Response '{response_id}' not found", "type": "not_found_error"}})
+    await _authorize_stored_response(request, entry, auth.token)
     log.info("[Responses] GET response_id=%s compacted=%s", response_id, entry.compacted)
     return JSONResponse(entry.payload)
 
@@ -389,9 +403,11 @@ async def responses_compact(response_id: str, request: Request):
     store = getattr(request.app.state, "response_store", None)
     if store is None:
         raise HTTPException(503, {"error": {"message": "Response store not available", "type": "server_error"}})
+    auth = await resolve_auth_context(request, request.app.state.users_db)
     entry = store.get(response_id)
     if entry is None:
         raise HTTPException(404, {"error": {"message": f"Response '{response_id}' not found", "type": "not_found_error"}})
+    auth_token = await _authorize_stored_response(request, entry, auth.token)
 
     if entry.compacted:
         log.info("[Responses] compact already applied for response_id=%s", response_id)
@@ -422,7 +438,7 @@ async def responses_compact(response_id: str, request: Request):
     # Mark the original as compacted
     store.mark_compacted(response_id, compacted)
     # Store the new compacted response under its own ID
-    store.put(compacted["id"], compacted, entry.original_request)
+    store.put(compacted["id"], compacted, entry.original_request, owner_token=getattr(entry, "owner_token", "") or auth_token)
 
     log.info("[Responses] compact done: old_id=%s new_id=%s", response_id, compacted["id"])
     return JSONResponse(compacted)
@@ -439,9 +455,11 @@ async def responses_input_items(response_id: str, request: Request):
     store = getattr(request.app.state, "response_store", None)
     if store is None:
         raise HTTPException(503, {"error": {"message": "Response store not available", "type": "server_error"}})
+    auth = await resolve_auth_context(request, request.app.state.users_db)
     entry = store.get(response_id)
     if entry is None:
         raise HTTPException(404, {"error": {"message": f"Response '{response_id}' not found", "type": "not_found_error"}})
+    await _authorize_stored_response(request, entry, auth.token)
 
     raw_input = entry.original_request.get("input", "")
     if isinstance(raw_input, str):

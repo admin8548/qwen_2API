@@ -330,7 +330,9 @@ export default function TestPage() {
             .map(o => ({ id: asText(o.call_id) || asText(o.id), name: asText(o.name), arguments: asText(o.arguments) }))
           if (toolCalls.length) appendToolCalls(toolCalls)
         }
-      } catch {}
+      } catch {
+        // Ignore malformed SSE fragments in the browser test console.
+      }
     }
 
     let buffer = ""
@@ -467,7 +469,9 @@ export default function TestPage() {
         }
         const { content, reasoning } = extractStreamDelta(data)
         enqueueAssistantDelta(content, reasoning)
-      } catch {}
+      } catch {
+        // Ignore malformed SSE fragments; terminal errors are handled above.
+      }
     }
 
     const dispatchSseEvent = () => {

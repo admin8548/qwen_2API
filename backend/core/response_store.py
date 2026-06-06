@@ -24,6 +24,7 @@ class StoredResponse:
     response_id: str
     payload: dict[str, Any]  # the full response JSON object
     original_request: dict[str, Any]  # the original POST /v1/responses request body
+    owner_token: str = ""  # API token that created the response; used by sub-endpoints
     created_at: float = field(default_factory=time.time)
     compacted: bool = False  # set to True when Phase B compression is applied
 
@@ -49,6 +50,8 @@ class ResponseStore:
         response_id: str,
         payload: dict[str, Any],
         original_request: dict[str, Any] | None = None,
+        *,
+        owner_token: str = "",
     ) -> StoredResponse:
         """Store a completed response.  Evicts expired / over-capacity entries."""
         self._evict_expired()
@@ -59,6 +62,7 @@ class ResponseStore:
             response_id=response_id,
             payload=dict(payload),
             original_request=dict(original_request) if original_request else {},
+            owner_token=owner_token or "",
         )
         self._data[response_id] = entry
         log.info("[ResponseStore] put response_id=%s total=%d", response_id, len(self._data))

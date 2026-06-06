@@ -11,6 +11,7 @@ import logging
 from typing import Any
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
+from backend.services.auth_quota import resolve_auth_context
 from backend.services.qwen_client import QwenClient
 
 log = logging.getLogger("qwen2api.images")
@@ -178,14 +179,8 @@ def _build_image_prompt(prompt: str, *, size: str, ratio: str) -> str:
 @router.post("/v1/images/generations")
 @router.post("/images/generations")
 async def create_image(request: Request):
-    from backend.core.config import API_KEYS, settings
-
     client: QwenClient = request.app.state.qwen_client
-
-    token = _get_token(request)
-    if API_KEYS:
-        if token != settings.ADMIN_KEY and token not in API_KEYS:
-            raise HTTPException(status_code=401, detail="Invalid API Key")
+    await resolve_auth_context(request, request.app.state.users_db)
 
     try:
         body = await request.json()

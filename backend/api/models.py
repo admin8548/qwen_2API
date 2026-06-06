@@ -34,7 +34,8 @@ async def list_models(request: Request):
 
 
 @router.get("/v1/models/{model_id}")
-async def get_model(model_id: str):
+async def get_model(model_id: str, request: Request):
+    await resolve_auth_context(request, request.app.state.users_db)
     mode = parse_model_mode(model_id)
     if not mode.base_model:
         raise HTTPException(status_code=404, detail={"error": {"message": f"Model '{model_id}' not found", "type": "invalid_request_error"}})

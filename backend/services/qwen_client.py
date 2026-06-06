@@ -609,6 +609,7 @@ class QwenClient:
         enable_search: bool = False,
         reasoning_effort: str | None = None,
         max_output_tokens: int | None = None,
+        exclude_emails: set[str] | None = None,
     ):
         async for item in self.executor.chat_stream_events_with_retry(
             model,
@@ -625,5 +626,6 @@ class QwenClient:
             enable_search=enable_search,
             reasoning_effort=reasoning_effort,
             max_output_tokens=max_output_tokens,
+            exclude_emails=exclude_emails,
         ):
             yield item

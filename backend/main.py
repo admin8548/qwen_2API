@@ -64,15 +64,23 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(context_cleanup_loop(app))
 
         # 启动 chat_id 预热池（省上游 /chats/new 握手 500ms~6s）
-        from backend.services.chat_id_pool import ChatIdPool
-        app.state.chat_id_pool = ChatIdPool(
-            app.state.qwen_client,
-            target_per_account=settings.CHAT_ID_POOL_TARGET_PER_ACCOUNT,
-            ttl_seconds=settings.CHAT_ID_POOL_TTL_SECONDS,
-            default_model="qwen3.6-plus",
-        )
-        app.state.qwen_executor.chat_id_pool = app.state.chat_id_pool  # 让 executor 直接访问
-        await app.state.chat_id_pool.start()
+        if settings.CHAT_ID_POOL_ENABLED:
+            from backend.services.chat_id_pool import ChatIdPool
+            app.state.chat_id_pool = ChatIdPool(
+                app.state.qwen_client,
+                target_per_account=settings.CHAT_ID_POOL_TARGET_PER_ACCOUNT,
+                ttl_seconds=settings.CHAT_ID_POOL_TTL_SECONDS,
+                default_model="qwen3.6-plus",
+                models=settings.CHAT_ID_POOL_MODELS,
+                failure_cooldown_seconds=settings.CHAT_ID_POOL_FAILURE_COOLDOWN_SECONDS,
+                refill_interval_seconds=settings.CHAT_ID_POOL_REFILL_INTERVAL_SECONDS,
+            )
+            app.state.qwen_executor.chat_id_pool = app.state.chat_id_pool  # 让 executor 直接访问
+            await app.state.chat_id_pool.start()
+        else:
+            app.state.chat_id_pool = None
+            app.state.qwen_executor.chat_id_pool = None
+            log.info("[Startup] ChatIdPool disabled by CHAT_ID_POOL_ENABLED=false")
         # Mock upstream: only when USE_MOCK_UPSTREAM=true in .env
         if os.getenv("USE_MOCK_UPSTREAM", "false").lower() in ("true", "1", "yes"):
             from backend.services.mock_upstream import MockUpstream

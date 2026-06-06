@@ -307,8 +307,9 @@ class QwenExecutor:
         enable_search: bool = False,
         reasoning_effort: str | None = None,
         max_output_tokens: int | None = None,
+        exclude_emails: set[str] | None = None,
     ):
-        exclude = set()
+        exclude = set(exclude_emails or set())
         last_error_message: str | None = None
         if fixed_account is not None:
             update_request_context(upstream_attempt=1)

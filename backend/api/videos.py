@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from backend.api.images import _extract_upstream_failure, _normalize_image_size
+from backend.services.auth_quota import resolve_auth_context
 from backend.services.qwen_client import QwenClient
 
 log = logging.getLogger("qwen2api.videos")
@@ -274,14 +275,9 @@ async def _create_video_with_account(
 @router.post("/v1/videos/generations")
 @router.post("/videos/generations")
 async def create_video(request: Request):
-    from backend.core.config import API_KEYS, settings
-
     client: QwenClient = request.app.state.qwen_client
-
-    token = _get_token(request)
-    if API_KEYS:
-        if token != settings.ADMIN_KEY and token not in API_KEYS:
-            raise HTTPException(status_code=401, detail="Invalid API Key")
+    from backend.core.config import settings
+    await resolve_auth_context(request, request.app.state.users_db)
 
     try:
         body = await request.json()

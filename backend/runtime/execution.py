@@ -1321,6 +1321,10 @@ async def collect_completion_run(
     async def cleanup_empty_upstream_state() -> None:
         if acc is None:
             return
+        if getattr(acc, "email", None):
+            getattr(request, "empty_retry_exclude", set()).add(acc.email)
+            request.force_direct_chat = True
+            request.skip_prewarmed_chat_ids = True
         token = getattr(acc, "token", None)
         pool = getattr(client, "executor", None) and getattr(client.executor, "chat_id_pool", None)
         if chat_id and token:
@@ -1334,7 +1338,11 @@ async def collect_completion_run(
                     log.warning("[Collect] delete empty chat failed chat_id=%s error=%s", chat_id, exc)
         if pool is not None:
             try:
-                flushed = await pool.flush_account(acc.email)
+                model = getattr(request, "resolved_model", None) or getattr(request, "response_model", None)
+                if hasattr(pool, "record_failure"):
+                    flushed = await pool.record_failure(acc.email, model, reason="empty_upstream_response")
+                else:
+                    flushed = await pool.flush_account(acc.email)
                 log.warning(
                     "[Collect] flushed prewarmed chats after empty upstream response account=%s count=%s",
                     acc.email,
@@ -1497,7 +1505,11 @@ async def collect_completion_run(
         return RuntimeExecutionResult(state=state, chat_id=chat_id, acc=acc)
 
     request_chat_type = getattr(request, "chat_type", "t2t") or "t2t"
-    use_prewarmed_chat = request_chat_type == "t2t" and not bool(getattr(request, "skip_prewarmed_chat_ids", False))
+    use_prewarmed_chat = (
+        request_chat_type == "t2t"
+        and not bool(getattr(request, "skip_prewarmed_chat_ids", False))
+        and not bool(getattr(request, "force_direct_chat", False))
+    )
     existing_chat_id = getattr(request, "upstream_chat_id", None) if request_chat_type == "t2t" else None
     update_request_context(
         surface=getattr(request, "surface", "-"),
@@ -1540,6 +1552,7 @@ async def collect_completion_run(
         enable_search=bool(getattr(request, "enable_search", False)),
         reasoning_effort=getattr(request, "reasoning_effort", None),
         max_output_tokens=getattr(request, "max_output_tokens", None),
+        exclude_emails=getattr(request, "empty_retry_exclude", None),
     ):
         if item.get("type") == "meta":
             chat_id = item.get("chat_id")

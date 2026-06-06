@@ -10,12 +10,12 @@ router = APIRouter()
 def verify_admin(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    token = authorization.split("Bearer ")[1]
+    token = authorization.split("Bearer ", 1)[1].strip()
 
-    from backend.core.config import API_KEYS, settings as backend_settings
+    from backend.core.config import settings as backend_settings
 
-    # 允许使用默认管理员 Key (ADMIN_KEY) 或者任何已生成的 API_KEYS 作为管理凭证
-    if token != backend_settings.ADMIN_KEY and token not in API_KEYS:
+    # 管理接口只接受 ADMIN_KEY；普通客户端 API Key 只能调用模型接口。
+    if not secrets.compare_digest(token, backend_settings.ADMIN_KEY):
         raise HTTPException(status_code=403, detail="Forbidden: Admin Key Mismatch")
     return token
 

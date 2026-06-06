@@ -90,8 +90,12 @@ export default function AccountsPage() {
     let cancelled = false
 
     if (!email || !password) {
-      setRegisterUnlocked(false)
-      return
+      queueMicrotask(() => {
+        if (!cancelled) setRegisterUnlocked(false)
+      })
+      return () => {
+        cancelled = true
+      }
     }
 
     sha256Hex(email + "::" + password)
